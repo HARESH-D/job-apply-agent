@@ -8,45 +8,105 @@ const PROFILE_KEY = "job_apply_profile_id";
 export default function ScraperPage() {
   const [runs, setRuns] = useState<ScrapeRun[]>([]);
   const [message, setMessage] = useState("");
+  const [messageTone, setMessageTone] = useState<"ok" | "err" | "">("");
 
   const load = () => {
     const profileId = localStorage.getItem(PROFILE_KEY);
     if (!profileId) {
       setMessage("Create a profile first.");
+      setMessageTone("err");
       return;
     }
-    api.listScrapeRuns(profileId).then(setRuns).catch((e) => setMessage(String(e)));
+    api
+      .listScrapeRuns(profileId)
+      .then((data) => {
+        setRuns(data);
+        setMessage("");
+        setMessageTone("");
+      })
+      .catch((e) => {
+        setMessage(String(e));
+        setMessageTone("err");
+      });
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+  }, []);
 
   return (
     <div>
-      <h2>Scraper Status</h2>
-      <div className="card">
-        <p>Local worker runs every <strong>6 hours</strong> (4×/day). Fetches jobs posted in last 24h.</p>
-        <h4>Setup (run on your PC)</h4>
-        <pre>{`cd worker/scraper
+      <h1 className="page-title">Scraper</h1>
+      <p className="page-lede">
+        Local worker on your PC — every 6 hours, jobs posted in the last 24h.
+        Session cookies never leave this machine.
+      </p>
+
+      <section className="section">
+        <div className="section-head">
+          <h2>Setup</h2>
+          <p>Run these once on your computer, then keep the daemon running.</p>
+        </div>
+        <pre className="code-panel">{`cd worker/scraper
 pip install -r requirements.txt
 playwright install chromium
 python login.py          # one-time LinkedIn login
 python daemon.py --once  # test run
 python daemon.py         # start 6h scheduler`}</pre>
-        <button onClick={load}>Refresh status</button>
-      </div>
-      {message && <p>{message}</p>}
-      {runs.map((run) => (
-        <div key={run.id} className="card">
-          <p>
-            <span className={run.status === "completed" ? "status-ok" : "status-err"}>
-              {run.status}
-            </span>
-            {" · "}{run.jobs_found} jobs · {new Date(run.started_at).toLocaleString()}
-          </p>
-          {run.errors && <p className="status-err">{run.errors}</p>}
+        <div className="actions">
+          <button type="button" className="btn" onClick={load}>
+            Refresh status
+          </button>
         </div>
-      ))}
-      {runs.length === 0 && <p>No scrape runs yet.</p>}
+      </section>
+
+      {message && (
+        <p
+          className={`toast ${messageTone === "ok" ? "toast-ok" : ""} ${messageTone === "err" ? "toast-err" : ""}`}
+        >
+          {message}
+        </p>
+      )}
+
+      <section className="section">
+        <div className="section-head">
+          <h2>Recent runs</h2>
+          <p>Latest scrape outcomes from the local worker.</p>
+        </div>
+
+        {runs.length === 0 && (
+          <div className="empty-state">
+            <strong>No scrape runs yet.</strong>
+            <br />
+            Run <code>python daemon.py --once</code> after login.
+          </div>
+        )}
+
+        <div className="status-list">
+          {runs.map((run) => {
+            const ok = run.status === "completed";
+            return (
+              <div key={run.id} className="status-item">
+                <p style={{ margin: 0 }}>
+                  <span
+                    className={`status-pill ${ok ? "status-ok" : "status-err"}`}
+                  >
+                    {run.status}
+                  </span>
+                  {" · "}
+                  {run.jobs_found} jobs ·{" "}
+                  {new Date(run.started_at).toLocaleString()}
+                </p>
+                {run.errors && (
+                  <p className="status-err hint" style={{ marginTop: "0.4rem" }}>
+                    {run.errors}
+                  </p>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </section>
     </div>
   );
 }
