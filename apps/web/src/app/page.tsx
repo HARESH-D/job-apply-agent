@@ -2,11 +2,35 @@
 
 import { useEffect, useState } from "react";
 import { api, Profile } from "@/lib/api";
+import { MultiSelect } from "@/components/MultiSelect";
 
 const PROFILE_KEY = "job_apply_profile_id";
+const SENIORITY_OPTIONS = [
+  { value: "entry", label: "Entry" },
+  { value: "mid", label: "Mid" },
+  { value: "senior", label: "Senior" },
+  { value: "lead", label: "Lead" },
+];
+const WORK_MODE_OPTIONS = [
+  { value: "remote", label: "Remote" },
+  { value: "hybrid", label: "Hybrid" },
+  { value: "onsite", label: "On-site" },
+];
 
 function parseList(value: string): string[] {
   return value.split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+function parseEducation(value: string) {
+  return value
+    .split("\n")
+    .map((line) => line.split("|").map((piece) => piece.trim()))
+    .filter((parts) => parts.some(Boolean))
+    .map(([degree = "", institution = "", year = ""]) => ({
+      degree,
+      institution,
+      year,
+    }));
 }
 
 type ParsedResumeView = {
@@ -94,14 +118,17 @@ export default function ProfilePage() {
   const [message, setMessage] = useState("");
   const [messageTone, setMessageTone] = useState<"ok" | "err" | "">("");
   const [parsed, setParsed] = useState<Record<string, unknown> | null>(null);
+  const [loadingProfile, setLoadingProfile] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [form, setForm] = useState({
     target_roles: "Software Engineer, Backend Developer",
     skills_must_have: "Python, FastAPI, PostgreSQL, React",
     skills_nice_to_have: "AWS, Docker, LangGraph",
     experience_years: "2",
-    seniority_level: "mid",
+    seniority_levels: ["entry", "mid"],
     locations: "Bangalore, Remote",
-    work_mode: "any",
+    work_modes: ["remote", "hybrid"],
     salary_min: "800000",
     salary_max: "1500000",
     salary_currency: "INR",
@@ -115,46 +142,88 @@ export default function ProfilePage() {
     phone: "",
     linkedin: "",
     github: "",
+    portfolio: "",
+    education: "",
+    certifications: "",
   });
 
   useEffect(() => {
-    const id = localStorage.getItem(PROFILE_KEY);
-    if (id) {
-      setProfileId(id);
-      api
-        .getProfile(id)
-        .then((p) => {
-          setForm({
-            target_roles: p.target_roles.join(", "),
-            skills_must_have: p.skills_must_have.join(", "),
-            skills_nice_to_have: p.skills_nice_to_have.join(", "),
-            experience_years: String(p.experience_years),
-            seniority_level: p.seniority_level,
-            locations: p.locations.join(", "),
-            work_mode: p.work_mode,
-            salary_min: String(p.salary_min ?? ""),
-            salary_max: String(p.salary_max ?? ""),
-            salary_currency: p.salary_currency,
-            current_role: p.current_role,
-            current_company: p.current_company,
-            industry: p.industry,
-            exclude_keywords: p.exclude_keywords.join(", "),
-            max_jobs_per_run: String(p.max_jobs_per_run),
-            match_threshold: String(p.match_threshold),
-            email: p.contact?.email || "",
-            phone: p.contact?.phone || "",
-            linkedin: p.contact?.linkedin || "",
-            github: p.contact?.github || "",
-          });
-          if (p.has_resume) api.getParsedResume(id).then(setParsed).catch(() => null);
-        })
-        .catch(() => localStorage.removeItem(PROFILE_KEY));
-    }
+    const hydrate = (p: Profile) => {
+      setProfileId(p.id);
+      localStorage.setItem(PROFILE_KEY, p.id);
+      setForm({
+        target_roles: p.target_roles.join(", "),
+        skills_must_have: p.skills_must_have.join(", "),
+        skills_nice_to_have: p.skills_nice_to_have.join(", "),
+        experience_years: String(p.experience_years),
+        seniority_levels:
+          p.seniority_levels?.length
+            ? p.seniority_levels
+            : [p.seniority_level || "mid"],
+        locations: p.locations.join(", "),
+        work_modes:
+          p.work_modes?.length ? p.work_modes : [p.work_mode || "remote"],
+        salary_min: String(p.salary_min ?? ""),
+        salary_max: String(p.salary_max ?? ""),
+        salary_currency: p.salary_currency,
+        current_role: p.current_role,
+        current_company: p.current_company,
+        industry: p.industry,
+        exclude_keywords: p.exclude_keywords.join(", "),
+        max_jobs_per_run: String(p.max_jobs_per_run),
+        match_threshold: String(p.match_threshold),
+        email: p.contact?.email || "",
+        phone: p.contact?.phone || "",
+        linkedin: p.contact?.linkedin || "",
+        github: p.contact?.github || "",
+        portfolio: p.contact?.portfolio || "",
+        education: (p.education || [])
+          .map((entry) =>
+            [entry.degree, entry.institution, entry.year].filter(Boolean).join(" | "),
+          )
+          .join("\n"),
+        certifications: (p.certifications || []).join(", "),
+      });
+      if (p.has_resume) api.getParsedResume(p.id).then(setParsed).catch(() => null);
+    };
+
+    const load = async () => {
+      const cachedId = localStorage.getItem(PROFILE_KEY);
+      try {
+        const profile = await api
+          .getCurrentProfile()
+          .catch(() =>
+            cachedId ? api.getProfile(cachedId) : Promise.reject(),
+          );
+        hydrate(profile);
+      } catch {
+        localStorage.removeItem(PROFILE_KEY);
+        setMessage(
+          cachedId
+            ? "Your cached profile could not be recovered. Review the fields before saving."
+            : "No saved profile found. Complete the fields to create one.",
+        );
+        setMessageTone(cachedId ? "err" : "");
+      } finally {
+        setLoadingProfile(false);
+      }
+    };
+    load();
   }, []);
 
+  useEffect(() => {
+    if (!message || messageTone !== "ok") return;
+    const timer = window.setTimeout(() => setMessage(""), 3500);
+    return () => window.clearTimeout(timer);
+  }, [message, messageTone]);
+
   const set =
-    (key: keyof typeof form) =>
-    (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
+    (key: Exclude<keyof typeof form, "seniority_levels" | "work_modes">) =>
+    (
+      e: React.ChangeEvent<
+        HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement
+      >,
+    ) =>
       setForm({ ...form, [key]: e.target.value });
 
   const buildPayload = (): Partial<Profile> => ({
@@ -162,9 +231,9 @@ export default function ProfilePage() {
     skills_must_have: parseList(form.skills_must_have),
     skills_nice_to_have: parseList(form.skills_nice_to_have),
     experience_years: parseFloat(form.experience_years) || 0,
-    seniority_level: form.seniority_level,
+    seniority_levels: form.seniority_levels,
     locations: parseList(form.locations),
-    work_mode: form.work_mode,
+    work_modes: form.work_modes,
     salary_min: form.salary_min ? parseFloat(form.salary_min) : undefined,
     salary_max: form.salary_max ? parseFloat(form.salary_max) : undefined,
     salary_currency: form.salary_currency,
@@ -174,15 +243,19 @@ export default function ProfilePage() {
     exclude_keywords: parseList(form.exclude_keywords),
     max_jobs_per_run: parseInt(form.max_jobs_per_run) || 50,
     match_threshold: parseFloat(form.match_threshold) || 50,
+    education: parseEducation(form.education),
+    certifications: parseList(form.certifications),
     contact: {
       email: form.email,
       phone: form.phone,
       linkedin: form.linkedin,
       github: form.github,
+      portfolio: form.portfolio,
     },
   });
 
   const save = async () => {
+    setSaving(true);
     try {
       const payload = buildPayload();
       const p = profileId
@@ -195,12 +268,15 @@ export default function ProfilePage() {
     } catch (e) {
       setMessage(String(e));
       setMessageTone("err");
+    } finally {
+      setSaving(false);
     }
   };
 
   const onResumeUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !profileId) return;
+    setUploading(true);
     try {
       const result = await api.uploadResume(profileId, file);
       setParsed(result);
@@ -209,8 +285,18 @@ export default function ProfilePage() {
     } catch (err) {
       setMessage(String(err));
       setMessageTone("err");
+    } finally {
+      setUploading(false);
     }
   };
+
+  if (loadingProfile) {
+    return (
+      <div className="empty-state" role="status">
+        <strong>Loading your saved profile…</strong>
+      </div>
+    );
+  }
 
   return (
     <div>
@@ -222,6 +308,8 @@ export default function ProfilePage() {
 
       {message && (
         <p
+          role={messageTone === "err" ? "alert" : "status"}
+          aria-live="polite"
           className={`toast ${messageTone === "ok" ? "toast-ok" : ""} ${messageTone === "err" ? "toast-err" : ""}`}
         >
           {message}
@@ -253,23 +341,72 @@ export default function ProfilePage() {
         </div>
         <div className="grid-2">
           <div className="field">
-            <label>Work mode</label>
-            <select value={form.work_mode} onChange={set("work_mode")}>
-              <option value="any">Any</option>
-              <option value="remote">Remote</option>
-              <option value="hybrid">Hybrid</option>
-              <option value="onsite">On-site</option>
-            </select>
+            <label>Work modes</label>
+            <MultiSelect
+              label="work modes"
+              options={WORK_MODE_OPTIONS}
+              values={form.work_modes}
+              onChange={(work_modes) => setForm({ ...form, work_modes })}
+            />
           </div>
           <div className="field">
-            <label>Seniority</label>
-            <select value={form.seniority_level} onChange={set("seniority_level")}>
-              <option value="entry">Entry</option>
-              <option value="mid">Mid</option>
-              <option value="senior">Senior</option>
-              <option value="lead">Lead</option>
-            </select>
+            <label>Seniority levels</label>
+            <MultiSelect
+              label="seniority levels"
+              options={SENIORITY_OPTIONS}
+              values={form.seniority_levels}
+              onChange={(seniority_levels) =>
+                setForm({ ...form, seniority_levels })
+              }
+            />
           </div>
+        </div>
+      </section>
+
+      <section className="section">
+        <div className="section-head">
+          <h2>Resume facts</h2>
+          <p>Verified details included in every tailored resume.</p>
+        </div>
+        <div className="grid-2">
+          <div className="field">
+            <label>Email</label>
+            <input type="email" value={form.email} onChange={set("email")} />
+          </div>
+          <div className="field">
+            <label>Phone</label>
+            <input value={form.phone} onChange={set("phone")} />
+          </div>
+          <div className="field">
+            <label>LinkedIn</label>
+            <input value={form.linkedin} onChange={set("linkedin")} />
+          </div>
+          <div className="field">
+            <label>GitHub</label>
+            <input value={form.github} onChange={set("github")} />
+          </div>
+        </div>
+        <div className="field">
+          <label>Portfolio</label>
+          <input value={form.portfolio} onChange={set("portfolio")} />
+        </div>
+        <div className="field">
+          <label>Education</label>
+          <textarea
+            rows={3}
+            value={form.education}
+            onChange={set("education")}
+            placeholder="BSc Computer Science | Example University | 2022"
+          />
+          <span className="hint">One entry per line: degree | institution | year</span>
+        </div>
+        <div className="field">
+          <label>Certifications</label>
+          <input
+            value={form.certifications}
+            onChange={set("certifications")}
+            placeholder="AWS Developer, CKA"
+          />
         </div>
       </section>
 
@@ -370,8 +507,13 @@ export default function ProfilePage() {
           </div>
         </div>
         <div className="actions">
-          <button type="button" className="btn" onClick={save}>
-            Save profile
+          <button
+            type="button"
+            className="btn"
+            onClick={save}
+            disabled={saving}
+          >
+            {saving ? "Saving…" : "Save profile"}
           </button>
         </div>
       </section>
@@ -386,8 +528,9 @@ export default function ProfilePage() {
           type="file"
           accept=".pdf,.docx"
           onChange={onResumeUpload}
-          disabled={!profileId}
+          disabled={!profileId || uploading}
         />
+        {uploading && <p className="hint">Parsing resume…</p>}
         {!profileId && (
           <p className="hint">Save your profile first, then upload a resume.</p>
         )}

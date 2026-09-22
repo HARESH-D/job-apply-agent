@@ -1,4 +1,5 @@
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 
@@ -10,14 +11,21 @@ ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from agents.graphs.tailor_graph import run_tailor_pipeline
+from agents.graphs.tailor_graph import run_tailor_pipeline, validate_tailored_resume
 from config import settings
 from database import get_db
 from models import JobMatch, JobPosting, ParsedResume, TailoredResume, UserProfile
-from packages.shared.schemas import JobResponse, MatchResponse, ParsedResume as ParsedResumeSchema, TailorResponse
+from packages.shared.schemas import (
+    JobResponse,
+    MatchResponse,
+    ParsedResume as ParsedResumeSchema,
+    TailorRequest,
+    TailorResponse,
+)
 from routers.jobs import _job_response
 from services.rescoring import rescore_profile
 from services.resume_renderer import render_ats_resume
+from services.resume_facts import merge_resume_facts
 
 router = APIRouter(prefix="/matches", tags=["matches"])
 
@@ -57,7 +65,11 @@ def rescore_matches(profile_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.post("/{match_id}/tailor", response_model=TailorResponse)
-def tailor_resume(match_id: UUID, db: Session = Depends(get_db)):
+def tailor_resume(
+    match_id: UUID,
+    request: TailorRequest = TailorRequest(),
+    db: Session = Depends(get_db),
+):
     match = db.query(JobMatch).filter(JobMatch.id == match_id).first()
     if not match:
         raise HTTPException(status_code=404, detail="Match not found")
@@ -70,15 +82,39 @@ def tailor_resume(match_id: UUID, db: Session = Depends(get_db)):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
+    if request.use_gemini and not request.consent_to_google_processing:
+        raise HTTPException(
+            status_code=400,
+            detail="Explicit consent is required before sending resume data to Google",
+        )
+
+    profile = (
+        db.query(UserProfile).filter(UserProfile.id == match.profile_id).first()
+    )
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    base_resume = ParsedResumeSchema.model_validate(parsed_row.json_blob)
+    verified_resume = merge_resume_facts(profile, base_resume)
+
     tailored_dict, diff_summary = run_tailor_pipeline(
-        parsed_row.json_blob,
+        verified_resume.model_dump(),
         job.jd_text,
         job.title,
+        use_gemini=request.use_gemini,
+        gemini_api_key=settings.gemini_api_key,
+        gemini_model=settings.gemini_model,
     )
     tailored = ParsedResumeSchema.model_validate(tailored_dict)
+    validation_report = validate_tailored_resume(verified_resume, tailored)
+    if validation_report:
+        raise HTTPException(
+            status_code=422,
+            detail={"message": "Tailored resume failed factual validation", "issues": validation_report},
+        )
 
     out_dir = Path(settings.storage_path) / "tailored" / str(match.profile_id)
-    docx_path = out_dir / f"{match_id}.docx"
+    version = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    docx_path = out_dir / str(match_id) / f"resume_{version}.docx"
     render_ats_resume(tailored, docx_path)
 
     existing = db.query(TailoredResume).filter(TailoredResume.match_id == match_id).first()
@@ -91,7 +127,13 @@ def tailor_resume(match_id: UUID, db: Session = Depends(get_db)):
     match.status = "tailored"
     db.commit()
 
-    return TailorResponse(match_id=match_id, diff_summary=diff_summary, docx_path=str(docx_path), status="tailored")
+    return TailorResponse(
+        match_id=match_id,
+        diff_summary=diff_summary,
+        docx_path=str(docx_path),
+        status="tailored",
+        validation_report=validation_report,
+    )
 
 
 @router.get("/{match_id}/resume")

@@ -4,7 +4,7 @@ from urllib.parse import quote_plus
 from models import UserProfile
 
 SENIORITY_MAP = {
-    "entry": "1",
+    "entry": "2",
     "mid": "3",
     "senior": "4",
     "lead": "5",
@@ -30,11 +30,30 @@ def build_linkedin_search_urls(profile: UserProfile) -> list[str]:
                 "f_TPR=r86400",
                 "sortBy=DD",
             ]
-            exp = SENIORITY_MAP.get(profile.seniority_level)
-            if exp:
-                params.append(f"f_E={exp}")
-            wt = WORK_MODE_MAP.get(profile.work_mode)
-            if wt and profile.work_mode != "any":
-                params.append(f"f_WT={wt}")
+            levels = getattr(profile, "seniority_levels", None) or [
+                getattr(profile, "seniority_level", "mid")
+            ]
+            exp_codes = list(
+                dict.fromkeys(
+                    SENIORITY_MAP[level]
+                    for level in levels
+                    if level in SENIORITY_MAP
+                )
+            )
+            if exp_codes:
+                params.append(f"f_E={quote_plus(','.join(exp_codes))}")
+
+            modes = getattr(profile, "work_modes", None) or [
+                getattr(profile, "work_mode", "any")
+            ]
+            work_codes = list(
+                dict.fromkeys(
+                    WORK_MODE_MAP[mode]
+                    for mode in modes
+                    if mode in WORK_MODE_MAP and mode != "any"
+                )
+            )
+            if work_codes:
+                params.append(f"f_WT={quote_plus(','.join(work_codes))}")
             urls.append("https://www.linkedin.com/jobs/search/?" + "&".join(params))
     return urls

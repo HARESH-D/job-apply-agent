@@ -3,7 +3,7 @@
 > **Single source of truth** for all features, architecture, and behavior.  
 > Any builder agent implementing this project **must read this file first** and **update it** when adding or changing features.
 
-**Last updated:** 2026-09-16  
+**Last updated:** 2026-09-22
 **Status:** Phase 1 implemented and verified against live LinkedIn — **no remote push**  
 **Inspired by:** [Skillmeet.ai](https://skillmeet.ai) multi-signal job relevance search
 
@@ -74,6 +74,8 @@ Cloud **never** scrapes LinkedIn directly. LinkedIn session cookies stay **local
 ### 3.1 Profile management
 
 - [x] Create / edit user profile (all fields in [§5](#5-user-profile-inputs))
+- [x] Persist profile data across restarts with current-profile recovery
+- [x] Multi-select work modes and seniority levels
 - [x] Upload base resume (PDF or DOCX)
 - [x] Parse resume → structured JSON preview in UI
 - [x] Validate required fields before enabling scraper
@@ -147,9 +149,9 @@ Cloud **never** scrapes LinkedIn directly. LinkedIn session cookies stay **local
 | Skills — must-have | Tag list | High-weight keyword + embedding match |
 | Skills — nice-to-have | Tag list | Lower-weight match |
 | Experience years | Number | Filter + scoring |
-| Seniority level | Enum (entry/mid/senior/lead) | Filter + scoring |
+| Seniority levels | Multi-select (entry/mid/senior/lead) | Filter + scoring |
 | Location(s) | Multi text | Geo filter |
-| Work mode | Enum (remote/hybrid/onsite/any) | Geo filter |
+| Work modes | Multi-select (remote/hybrid/onsite) | Geo filter |
 | Salary min / max | Number + currency | Hard filter |
 | Current role | Text | Skillmeet-style relevance boost |
 | Current company | Text | Relevance boost |
@@ -311,6 +313,8 @@ Applied before scoring; a failure returns score `0` with the reason stored.
 | Exclude keywords | **Whole-word** match on title and JD |
 | Salary | Reject when `job.salary_max < profile.salary_min` |
 | Location | Profile location (plus aliases) must appear in job location, or the job is remote and `work_mode` allows it |
+| Experience | Reject when the JD's explicit minimum years exceed the profile |
+| Seniority | Reject Senior/Staff/Principal/Lead/Director/Executive titles outside selected levels |
 
 **City aliases matter.** LinkedIn returns `Bengaluru, Karnataka, India` while users
 type `Bangalore`, so a plain substring test rejected every valid local job.
@@ -337,11 +341,11 @@ above 50%, topping out at 62%.
 | Component | Tech | Role |
 |-----------|------|------|
 | Resume parser | `pdfplumber` / `python-docx` | Base resume → JSON (once) |
-| JD normalizer | LLM structured output | Extract skills, keywords, seniority from JD |
-| Gap analyzer | LLM or keyword diff | Map JD requirements → your bullets |
-| Tailor agent | LangGraph node + LLM | Rewrite bullets, reorder skills |
-| QA check | LangGraph node | No fabrication + ATS rules |
-| Renderer | `python-docx` + Jinja template | Produce final `.docx` |
+| JD normalizer | Deterministic extraction | Extract skills, keywords, seniority and years |
+| Gap analyzer | Keyword diff | Map JD requirements without adding missing skills |
+| Tailor agent | Local rules + optional Gemini | Reorder and conservatively rewrite verified facts |
+| QA check | Programmatic validator | Preserve companies, roles, dates, metrics and skills |
+| Renderer | `python-docx` | Produce professional single-column `.docx` |
 | Storage | S3/MinIO + Postgres | `tailored_resumes` table |
 
 ### What tailor changes
@@ -356,6 +360,11 @@ above 50%, topping out at 62%.
 - Add fake companies, years, or skills
 - Use tables, columns, icons, graphics
 - Keyword-stuff invisible text
+
+Gemini 2.5 Flash-Lite is disabled by default and requires explicit consent for
+each request because resume and JD data are sent to Google. If the key is
+missing, quota or timeout occurs, JSON is invalid, or factual validation fails,
+the deterministic local result is used. Generated files are versioned per job.
 
 ### ATS template rules
 
@@ -479,7 +488,9 @@ stateDiagram-v2
 
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
-| POST | `/profiles` | Create/update profile |
+| POST | `/profiles` | Create profile |
+| GET | `/profiles/current` | Recover latest active profile |
+| PATCH | `/profiles/{id}` | Partially update profile |
 | GET | `/profiles/{id}` | Get profile |
 | POST | `/profiles/{id}/resume` | Upload base resume |
 | GET | `/profiles/{id}/resume/parsed` | Get parsed JSON |

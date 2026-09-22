@@ -1,5 +1,5 @@
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 
@@ -14,7 +14,13 @@ from config import settings
 from database import get_db
 from deps import verify_worker_key
 from models import ParsedResume, UserProfile
-from packages.shared.schemas import ActiveProfileConfig, ParsedResume as ParsedResumeSchema, ProfileCreate, ProfileResponse
+from packages.shared.schemas import (
+    ActiveProfileConfig,
+    ParsedResume as ParsedResumeSchema,
+    ProfileCreate,
+    ProfileResponse,
+    ProfileUpdate,
+)
 from services.rescoring import rescore_profile
 from services.resume_parser import parse_resume_file
 from services.search_builder import build_linkedin_search_urls
@@ -33,8 +39,11 @@ def _to_response(profile: UserProfile, db: Session) -> ProfileResponse:
         skills_must_have=profile.skills_must_have or [],
         skills_nice_to_have=profile.skills_nice_to_have or [],
         experience_years=profile.experience_years,
+        seniority_levels=profile.seniority_levels
+        or [profile.seniority_level or "mid"],
         seniority_level=profile.seniority_level,
         locations=profile.locations or [],
+        work_modes=profile.work_modes or [profile.work_mode or "any"],
         work_mode=profile.work_mode,
         salary_min=profile.salary_min,
         salary_max=profile.salary_max,
@@ -59,10 +68,19 @@ def _to_response(profile: UserProfile, db: Session) -> ProfileResponse:
     )
 
 
-def _apply_profile_data(profile: UserProfile, data: ProfileCreate) -> None:
-    for field, value in data.model_dump().items():
+def _apply_profile_data(
+    profile: UserProfile, data: ProfileCreate | ProfileUpdate
+) -> None:
+    values = data.model_dump(exclude_unset=isinstance(data, ProfileUpdate))
+    for field, value in values.items():
+        if value is None:
+            continue
         setattr(profile, field, value)
-    profile.updated_at = datetime.utcnow()
+    if "seniority_levels" in values and values["seniority_levels"]:
+        profile.seniority_level = values["seniority_levels"][0]
+    if "work_modes" in values and values["work_modes"]:
+        profile.work_mode = values["work_modes"][0]
+    profile.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 @router.post("", response_model=ProfileResponse)
@@ -86,6 +104,19 @@ def get_active_profile(db: Session = Depends(get_db)):
     )
 
 
+@router.get("/current", response_model=ProfileResponse)
+def get_current_profile(db: Session = Depends(get_db)):
+    profile = (
+        db.query(UserProfile)
+        .filter(UserProfile.is_active.is_(True))
+        .order_by(UserProfile.updated_at.desc())
+        .first()
+    )
+    if not profile:
+        raise HTTPException(status_code=404, detail="No active profile")
+    return _to_response(profile, db)
+
+
 @router.get("/{profile_id}", response_model=ProfileResponse)
 def get_profile(profile_id: UUID, db: Session = Depends(get_db)):
     profile = db.query(UserProfile).filter(UserProfile.id == profile_id).first()
@@ -94,8 +125,8 @@ def get_profile(profile_id: UUID, db: Session = Depends(get_db)):
     return _to_response(profile, db)
 
 
-@router.put("/{profile_id}", response_model=ProfileResponse)
-def update_profile(profile_id: UUID, data: ProfileCreate, db: Session = Depends(get_db)):
+@router.patch("/{profile_id}", response_model=ProfileResponse)
+def update_profile(profile_id: UUID, data: ProfileUpdate, db: Session = Depends(get_db)):
     profile = db.query(UserProfile).filter(UserProfile.id == profile_id).first()
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
@@ -103,6 +134,19 @@ def update_profile(profile_id: UUID, data: ProfileCreate, db: Session = Depends(
     db.commit()
     db.refresh(profile)
     # Roles, skills and threshold all feed scoring, so stored matches are now stale.
+    rescore_profile(db, profile)
+    return _to_response(profile, db)
+
+
+@router.put("/{profile_id}", response_model=ProfileResponse)
+def replace_profile(profile_id: UUID, data: ProfileCreate, db: Session = Depends(get_db)):
+    """Backward-compatible full update; new clients should use PATCH."""
+    profile = db.query(UserProfile).filter(UserProfile.id == profile_id).first()
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    _apply_profile_data(profile, data)
+    db.commit()
+    db.refresh(profile)
     rescore_profile(db, profile)
     return _to_response(profile, db)
 
@@ -136,7 +180,7 @@ async def upload_resume(profile_id: UUID, file: UploadFile = File(...), db: Sess
     if existing:
         existing.json_blob = parsed.model_dump()
         existing.source_file_path = str(dest)
-        existing.parsed_at = datetime.utcnow()
+        existing.parsed_at = datetime.now(timezone.utc).replace(tzinfo=None)
     else:
         db.add(ParsedResume(
             profile_id=profile_id,

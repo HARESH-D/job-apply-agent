@@ -11,6 +11,8 @@ export default function JobsPage() {
   const [message, setMessage] = useState("");
   const [messageTone, setMessageTone] = useState<"ok" | "err" | "">("");
   const [loading, setLoading] = useState(false);
+  const [useGemini, setUseGemini] = useState(false);
+  const [tailoringId, setTailoringId] = useState<string | null>(null);
 
   const load = async () => {
     const profileId = localStorage.getItem(PROFILE_KEY);
@@ -39,14 +41,17 @@ export default function JobsPage() {
   }, [minScore]);
 
   const tailor = async (matchId: string) => {
+    setTailoringId(matchId);
     try {
-      const result = await api.tailorResume(matchId);
+      const result = await api.tailorResume(matchId, useGemini);
       setMessage(`Tailored: ${result.diff_summary}`);
       setMessageTone("ok");
       load();
     } catch (e) {
       setMessage(String(e));
       setMessageTone("err");
+    } finally {
+      setTailoringId(null);
     }
   };
 
@@ -77,8 +82,26 @@ export default function JobsPage() {
         </button>
       </div>
 
+      <section className="privacy-consent">
+        <label>
+          <input
+            type="checkbox"
+            checked={useGemini}
+            onChange={(event) => setUseGemini(event.target.checked)}
+          />
+          <span>Use Gemini 2.5 Flash-Lite for this tailoring request</span>
+        </label>
+        <p>
+          When enabled, your resume and the job description are sent to Google.
+          Google&apos;s free-tier data-use terms may allow service improvement.
+          Leave this unchecked to use the private local tailoring pipeline.
+        </p>
+      </section>
+
       {message && (
         <p
+          role={messageTone === "err" ? "alert" : "status"}
+          aria-live="polite"
           className={`toast ${messageTone === "ok" ? "toast-ok" : ""} ${messageTone === "err" ? "toast-err" : ""}`}
         >
           {message}
@@ -134,13 +157,18 @@ export default function JobsPage() {
                   View job
                 </a>
               )}
-              {job.match_id && job.match_status !== "tailored" && (
+              {job.match_id && (
                 <button
                   type="button"
                   className="btn"
                   onClick={() => tailor(job.match_id!)}
+                  disabled={tailoringId === job.match_id}
                 >
-                  Tailor resume
+                  {tailoringId === job.match_id
+                    ? "Tailoring…"
+                    : job.match_status === "tailored"
+                      ? "Tailor new version"
+                      : "Tailor resume"}
                 </button>
               )}
               {job.match_id && job.match_status === "tailored" && (

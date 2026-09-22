@@ -1,24 +1,10 @@
-"""LangGraph resume tailoring pipeline with rule-based fallback.
-
-Never invents companies, skills, or job titles that are not in the base resume.
-Bullet text is reordered (not rewritten) so ATS output stays factually honest.
-"""
+"""Fact-bounded, JD-aware resume tailoring with optional Gemini rewriting."""
 from __future__ import annotations
 
 import re
-from typing import TypedDict
+from typing import Any
 
 from packages.shared.schemas import ExperienceEntry, ParsedResume
-
-
-class TailorState(TypedDict):
-    base_resume: dict
-    jd_text: str
-    job_title: str
-    tailored_resume: dict
-    diff_summary: str
-    qa_passed: bool
-    retry_count: int
 
 
 JD_STOPWORDS = {
@@ -31,6 +17,12 @@ JD_STOPWORDS = {
     "requirements", "skills", "must", "should", "would", "about", "across", "within",
     "apply", "please", "join", "looking", "help", "make", "also", "well", "using", "use",
 }
+TECH_TERMS = {
+    "AWS", "Azure", "GCP", "Docker", "Kubernetes", "Terraform", "Python",
+    "Java", "JavaScript", "TypeScript", "React", "Angular", "Vue", "Node.js",
+    "FastAPI", "Django", "Flask", "Spring", "PostgreSQL", "MySQL", "MongoDB",
+    "Redis", "Kafka", "Git", "CI/CD", "REST", "GraphQL", "Linux", "SQL",
+}
 
 
 def _extract_jd_keywords(jd_text: str) -> list[str]:
@@ -42,6 +34,33 @@ def _extract_jd_keywords(jd_text: str) -> list[str]:
         if len(low) > 2 and low not in JD_STOPWORDS:
             freq[low] = freq.get(low, 0) + 1
     return [k for k, _ in sorted(freq.items(), key=lambda x: (-x[1], x[0]))[:25]]
+
+
+def extract_jd_requirements(
+    jd_text: str, job_title: str, base_skills: list[str]
+) -> dict[str, Any]:
+    """Return structured, explainable JD requirements."""
+    from services.match_engine import _extract_required_years
+
+    matched = [
+        skill
+        for skill in base_skills
+        if re.search(rf"(?<!\w){re.escape(skill)}(?!\w)", jd_text, re.IGNORECASE)
+    ]
+    mentioned_tech = [
+        term
+        for term in sorted(TECH_TERMS)
+        if re.search(rf"(?<!\w){re.escape(term)}(?!\w)", jd_text, re.IGNORECASE)
+    ]
+    matched_lower = {skill.lower() for skill in matched}
+    gaps = [term for term in mentioned_tech if term.lower() not in matched_lower]
+    return {
+        "job_title": job_title,
+        "experience_years": _extract_required_years(jd_text),
+        "keywords": _extract_jd_keywords(f"{job_title} {jd_text}"),
+        "matched_skills": matched,
+        "skill_gaps": gaps,
+    }
 
 
 def _bullet_keyword_hits(bullet: str, keywords: list[str]) -> int:
@@ -67,9 +86,10 @@ def _reorder_skills(resume: ParsedResume, keywords: list[str]) -> list[str]:
     return sorted(skills, key=rank)
 
 
-def tailor_node(state: TailorState) -> TailorState:
-    base = ParsedResume.model_validate(state["base_resume"])
-    keywords = _extract_jd_keywords(state["jd_text"] + " " + state["job_title"])
+def _local_tailor(
+    base: ParsedResume, requirements: dict[str, Any]
+) -> ParsedResume:
+    keywords = requirements["keywords"]
 
     tailored_exp: list[ExperienceEntry] = []
     for exp in base.experience:
@@ -85,99 +105,106 @@ def tailor_node(state: TailorState) -> TailorState:
     ordered_skills = _reorder_skills(base, keywords)
     # Prefer the existing summary; only append a soft focus line that does not
     # claim the candidate already holds the target title.
-    summary = (base.summary or "").strip()
-    title = state["job_title"].strip()
-    if title and title.lower() not in summary.lower():
-        focus = f"Targeting roles such as {title}."
-        summary = f"{summary} {focus}".strip() if summary else focus
-
     tailored = base.model_copy(deep=True)
     tailored.experience = tailored_exp
     tailored.skills_must_have = ordered_skills[:15]
     tailored.skills_nice_to_have = ordered_skills[15:]
-    tailored.summary = summary[:500]
-
-    diff_parts = [
-        f"Reordered skills toward keywords for {title or 'target role'}",
-        "Reordered experience bullets by JD keyword overlap (content unchanged)",
-    ]
-    if title and title.lower() not in (base.summary or "").lower():
-        diff_parts.append(f"Noted target role focus: {title}")
-    if keywords:
-        diff_parts.append(f"Top JD terms used for ordering: {', '.join(keywords[:5])}")
-
-    return {
-        **state,
-        "tailored_resume": tailored.model_dump(),
-        "diff_summary": "; ".join(diff_parts),
-        "qa_passed": False,
-    }
+    tailored.projects = sorted(
+        base.projects,
+        key=lambda project: -_bullet_keyword_hits(
+            " ".join([project.name, project.description, *project.bullets]),
+            keywords,
+        ),
+    )
+    return tailored
 
 
-def qa_node(state: TailorState) -> TailorState:
-    base = ParsedResume.model_validate(state["base_resume"])
-    tailored = ParsedResume.model_validate(state["tailored_resume"])
+def validate_tailored_resume(
+    base: ParsedResume, tailored: ParsedResume
+) -> list[str]:
+    """Return factuality violations. An empty list means validation passed."""
+    issues: list[str] = []
 
     base_companies = {e.company for e in base.experience if e.company}
     tailored_companies = {e.company for e in tailored.experience if e.company}
-    invented_companies = tailored_companies - base_companies
+    if tailored_companies - base_companies:
+        issues.append("Changed or invented companies")
 
     base_roles = {e.role.lower() for e in base.experience if e.role}
     tailored_roles = {e.role.lower() for e in tailored.experience if e.role}
-    invented_roles = tailored_roles - base_roles
+    if tailored_roles - base_roles:
+        issues.append("Changed or invented roles")
 
     base_skills = {s.lower() for s in base.skills_must_have + base.skills_nice_to_have}
     tailored_skills = {s.lower() for s in tailored.skills_must_have + tailored.skills_nice_to_have}
     invented_skills = tailored_skills - base_skills
+    if invented_skills:
+        issues.append(f"Invented skills: {', '.join(sorted(invented_skills))}")
 
-    # Reject soft title invention patterns from older tailor versions.
-    summary_low = tailored.summary.lower()
-    fabricated_title_claim = bool(
-        state["job_title"]
-        and f"{state['job_title'].lower()} professional" in summary_low
-        and state["job_title"].lower() not in (base.summary or "").lower()
-    )
+    base_dates = {(e.start_date, e.end_date) for e in base.experience}
+    tailored_dates = {(e.start_date, e.end_date) for e in tailored.experience}
+    if not tailored_dates <= base_dates:
+        issues.append("Changed or invented employment dates")
 
-    passed = (
-        not invented_companies
-        and not invented_roles
-        and not invented_skills
-        and not fabricated_title_claim
-        and len(tailored.summary) <= 600
-    )
-    return {**state, "qa_passed": passed, "retry_count": state["retry_count"] + 1}
+    base_numbers = set(re.findall(r"\b\d+(?:[.,]\d+)?%?\b", " ".join(
+        bullet for exp in base.experience for bullet in exp.bullets
+    )))
+    tailored_numbers = set(re.findall(r"\b\d+(?:[.,]\d+)?%?\b", " ".join(
+        bullet for exp in tailored.experience for bullet in exp.bullets
+    )))
+    if tailored_numbers - base_numbers:
+        issues.append("Changed or invented metrics")
+
+    leak_phrases = ("here is", "revised resume", "as an ai", "tailored resume")
+    if any(phrase in tailored.summary.lower() for phrase in leak_phrases):
+        issues.append("LLM meta-language leaked into resume")
+    return issues
 
 
-def run_tailor_pipeline(base_resume: dict, jd_text: str, job_title: str) -> tuple[dict, str]:
-    state: TailorState = {
-        "base_resume": base_resume,
-        "jd_text": jd_text,
-        "job_title": job_title,
-        "tailored_resume": {},
-        "diff_summary": "",
-        "qa_passed": False,
-        "retry_count": 0,
-    }
+def run_tailor_pipeline(
+    base_resume: dict,
+    jd_text: str,
+    job_title: str,
+    *,
+    use_gemini: bool = False,
+    gemini_api_key: str = "",
+    gemini_model: str = "gemini-2.5-flash-lite",
+) -> tuple[dict, str]:
+    base = ParsedResume.model_validate(base_resume)
+    skills = base.skills_must_have + base.skills_nice_to_have
+    requirements = extract_jd_requirements(jd_text, job_title, skills)
+    local = _local_tailor(base, requirements)
+    tailored = local
+    engine = "local fallback" if use_gemini else "local"
 
-    try:
-        from langgraph.graph import END, StateGraph
+    if use_gemini and gemini_api_key:
+        try:
+            from services.gemini_tailor import rewrite_resume_with_gemini
 
-        graph = StateGraph(TailorState)
-        graph.add_node("tailor", tailor_node)
-        graph.add_node("qa", qa_node)
+            candidate = rewrite_resume_with_gemini(
+                local, jd_text, requirements, gemini_api_key, gemini_model
+            )
+            if not validate_tailored_resume(base, candidate):
+                tailored = candidate
+                engine = "Gemini"
+            else:
+                engine = "local fallback"
+        except Exception:
+            engine = "local fallback"
 
-        def route_after_qa(s: TailorState):
-            if s["qa_passed"] or s["retry_count"] >= 1:
-                return END
-            return "tailor"
+    issues = validate_tailored_resume(base, tailored)
+    if issues:
+        tailored = local
+        engine = "local fallback"
 
-        graph.set_entry_point("tailor")
-        graph.add_edge("tailor", "qa")
-        graph.add_conditional_edges("qa", route_after_qa, {"tailor": "tailor", END: END})
-        app = graph.compile()
-        result = app.invoke(state)
-        return result["tailored_resume"], result["diff_summary"]
-    except Exception:
-        state = tailor_node(state)
-        state = qa_node(state)
-        return state["tailored_resume"], state["diff_summary"]
+    parts = [
+        f"Engine: {engine}",
+        f"Reordered skills and bullets for {job_title}",
+    ]
+    if requirements["matched_skills"]:
+        parts.append(
+            "Matched: " + ", ".join(requirements["matched_skills"][:6])
+        )
+    if requirements["skill_gaps"]:
+        parts.append("Skill gaps (not added): " + ", ".join(requirements["skill_gaps"][:6]))
+    return tailored.model_dump(), "; ".join(parts)

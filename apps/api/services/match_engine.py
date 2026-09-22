@@ -90,13 +90,52 @@ def _role_match(target_roles: list[str], title: str, jd_text: str) -> tuple[floa
 def _exp_fit(profile: UserProfile, jd_text: str) -> float:
     years = profile.experience_years
     jd_lower = jd_text.lower()
+    required = _extract_required_years(jd_text)
+    if required is not None:
+        if required > years:
+            return 0.0
+        return 1.0 if years - required <= 3 else 0.8
     if years <= 2 and any(k in jd_lower for k in ("junior", "entry", "0-2", "1-2")):
         return 1.0
     if 2 < years <= 5 and any(k in jd_lower for k in ("mid", "2-5", "3-5", "associate")):
         return 1.0
     if years > 5 and any(k in jd_lower for k in ("senior", "lead", "5+", "staff")):
         return 1.0
-    return 0.6
+    return 0.5
+
+
+def _extract_required_years(text: str) -> int | None:
+    """Extract the strongest explicit minimum-experience requirement."""
+    lowered = text.lower()
+    patterns = (
+        r"(?:minimum|min\.?|at\s+least)\s+(?:of\s+)?(\d{1,2})\s*\+?\s*years?",
+        r"(\d{1,2})\s*(?:-|–|—|to)\s*\d{1,2}\s*years?",
+        r"(\d{1,2})\s*\+\s*years?",
+        r"(?:requires?|required|need(?:ed)?|have)\D{0,24}(\d{1,2})\s+years?",
+    )
+    values = [
+        int(match.group(1))
+        for pattern in patterns
+        for match in re.finditer(pattern, lowered)
+    ]
+    return max(values) if values else None
+
+
+def _selected_levels(profile: UserProfile) -> set[str]:
+    values = getattr(profile, "seniority_levels", None) or [
+        getattr(profile, "seniority_level", "mid")
+    ]
+    return {getattr(value, "value", value) for value in values}
+
+
+def _title_level_allowed(profile: UserProfile, title: str) -> bool:
+    levels = _selected_levels(profile)
+    title_lower = title.lower()
+    if re.search(r"\b(director|executive|principal|staff|lead|head)\b", title_lower):
+        return "lead" in levels
+    if re.search(r"\bsenior\b|\bsr\.?\b", title_lower):
+        return bool(levels & {"senior", "lead"})
+    return True
 
 
 def _freshness(posted_at: datetime | None) -> float:
@@ -177,6 +216,18 @@ def _passes_hard_filters(profile: UserProfile, job: JobPosting) -> tuple[bool, l
     if profile.salary_min and job.salary_max and job.salary_max < profile.salary_min:
         return False, ["Salary below minimum"]
 
+    required_years = _extract_required_years(job.jd_text)
+    profile_years = profile.experience_years or 0
+    if required_years is not None and required_years > profile_years:
+        return False, [
+            f"Requires {required_years}+ years; profile has {profile_years:g}"
+        ]
+
+    if not _title_level_allowed(profile, job.title):
+        return False, [
+            f"Seniority mismatch: {job.title} is outside selected levels"
+        ]
+
     if profile.locations and job.location:
         job_loc = job.location.lower()
         loc_hit = any(
@@ -184,7 +235,11 @@ def _passes_hard_filters(profile: UserProfile, job: JobPosting) -> tuple[bool, l
             for loc in profile.locations
             for variant in _location_variants(loc)
         )
-        remote_ok = profile.work_mode in ("remote", "any") and "remote" in job_loc
+        modes = getattr(profile, "work_modes", None) or [
+            getattr(profile, "work_mode", "any")
+        ]
+        normalized_modes = {getattr(mode, "value", mode) for mode in modes}
+        remote_ok = bool(normalized_modes & {"remote", "any"}) and "remote" in job_loc
         if not loc_hit and not remote_ok:
             return False, [f"Location mismatch: {job.location}"]
 

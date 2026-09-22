@@ -71,15 +71,25 @@ class EducationEntry(BaseModel):
     year: str = ""
 
 
+class ProjectEntry(BaseModel):
+    name: str = ""
+    description: str = ""
+    technologies: list[str] = Field(default_factory=list)
+    bullets: list[str] = Field(default_factory=list)
+
+
 class ParsedResume(BaseModel):
     name: str = ""
+    location: str = ""
     contact: ContactInfo = Field(default_factory=ContactInfo)
     summary: str = ""
     skills_must_have: list[str] = Field(default_factory=list)
     skills_nice_to_have: list[str] = Field(default_factory=list)
     experience: list[ExperienceEntry] = Field(default_factory=list)
+    projects: list[ProjectEntry] = Field(default_factory=list)
     education: list[EducationEntry] = Field(default_factory=list)
     certifications: list[str] = Field(default_factory=list)
+    achievements: list[str] = Field(default_factory=list)
 
 
 class ProfileCreate(BaseModel):
@@ -87,9 +97,13 @@ class ProfileCreate(BaseModel):
     skills_must_have: list[str] = Field(default_factory=list)
     skills_nice_to_have: list[str] = Field(default_factory=list)
     experience_years: float = 0
-    seniority_level: SeniorityLevel = SeniorityLevel.MID
+    seniority_levels: list[SeniorityLevel] = Field(
+        default_factory=lambda: [SeniorityLevel.MID]
+    )
+    seniority_level: Optional[SeniorityLevel] = None
     locations: list[str] = Field(default_factory=list)
-    work_mode: WorkMode = WorkMode.ANY
+    work_modes: list[WorkMode] = Field(default_factory=lambda: [WorkMode.ANY])
+    work_mode: Optional[WorkMode] = None
     salary_min: Optional[float] = None
     salary_max: Optional[float] = None
     salary_currency: str = "USD"
@@ -110,6 +124,36 @@ class ProfileCreate(BaseModel):
     max_jobs_per_run: int = 50
     match_threshold: float = 50.0
     contact: ContactInfo = Field(default_factory=ContactInfo)
+
+
+class ProfileUpdate(BaseModel):
+    target_roles: Optional[list[str]] = None
+    skills_must_have: Optional[list[str]] = None
+    skills_nice_to_have: Optional[list[str]] = None
+    experience_years: Optional[float] = None
+    seniority_levels: Optional[list[SeniorityLevel]] = None
+    locations: Optional[list[str]] = None
+    work_modes: Optional[list[WorkMode]] = None
+    salary_min: Optional[float] = None
+    salary_max: Optional[float] = None
+    salary_currency: Optional[str] = None
+    current_role: Optional[str] = None
+    current_company: Optional[str] = None
+    industry: Optional[str] = None
+    work_authorization: Optional[str] = None
+    willing_to_relocate: Optional[bool] = None
+    relocate_cities: Optional[list[str]] = None
+    employment_type: Optional[EmploymentType] = None
+    exclude_keywords: Optional[list[str]] = None
+    industry_preferences: Optional[list[str]] = None
+    company_size: Optional[CompanySize] = None
+    education: Optional[list[EducationEntry]] = None
+    certifications: Optional[list[str]] = None
+    notice_period_days: Optional[int] = None
+    earliest_start_date: Optional[str] = None
+    max_jobs_per_run: Optional[int] = None
+    match_threshold: Optional[float] = None
+    contact: Optional[ContactInfo] = None
 
 
 class ProfileResponse(ProfileCreate):
@@ -184,6 +228,12 @@ class TailorResponse(BaseModel):
     diff_summary: str
     docx_path: str
     status: MatchStatus
+    validation_report: list[str] = Field(default_factory=list)
+
+
+class TailorRequest(BaseModel):
+    use_gemini: bool = False
+    consent_to_google_processing: bool = False
 
 
 class ActiveProfileConfig(BaseModel):

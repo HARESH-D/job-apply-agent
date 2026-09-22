@@ -22,7 +22,9 @@ copy ..\..\.env.example ..\..\.env
 uvicorn main:app --reload --port 8000
 ```
 
-Uses SQLite by default (`jobagent.db`). Optional Postgres + pgvector:
+Uses SQLite by default (`jobagent.db`). Relative database and storage paths are
+anchored to the repository root, so API and worker launches from different
+directories share the same persisted profile. Optional Postgres + pgvector:
 
 ```powershell
 cd infra
@@ -40,6 +42,16 @@ npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000)
+
+Profile work modes and seniority levels support multiple selections. Matching
+hard-rejects jobs whose explicit years-of-experience requirement exceeds the
+saved profile and rejects titles outside the selected levels.
+
+Resume tailoring is local and deterministic by default. Gemini 2.5 Flash-Lite
+is optional per request: enabling it sends the resume and job description to
+Google under Google's data-use terms. Missing keys, quota errors, timeouts, and
+invalid output fall back to local tailoring. All output is validated against
+the verified base resume and rendered as a single-column ATS-safe DOCX.
 
 ### 3. Local scraper (your PC)
 

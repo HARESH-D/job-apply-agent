@@ -5,7 +5,13 @@ from pathlib import Path
 import pdfplumber
 from docx import Document
 
-from packages.shared.schemas import ContactInfo, EducationEntry, ExperienceEntry, ParsedResume
+from packages.shared.schemas import (
+    ContactInfo,
+    EducationEntry,
+    ExperienceEntry,
+    ParsedResume,
+    ProjectEntry,
+)
 
 SECTION_KEYWORDS: dict[str, tuple[str, ...]] = {
     "experience": ("WORKEXPERIENCE", "PROFESSIONALEXPERIENCE", "EXPERIENCE", "EMPLOYMENT", "CAREERHISTORY"),
@@ -13,6 +19,7 @@ SECTION_KEYWORDS: dict[str, tuple[str, ...]] = {
     "education": ("EDUCATION", "ACADEMIC", "QUALIFICATIONS"),
     "certifications": ("CERTIFICATIONS", "CERTIFICATION", "LICENSES"),
     "projects": ("PROJECTS", "PERSONALPROJECTS"),
+    "achievements": ("ACHIEVEMENTS", "AWARDS", "AWARDSANDACHIEVEMENTS"),
     "summary": ("SUMMARY", "PROFESSIONALSUMMARY", "OBJECTIVE", "PROFILE", "ABOUTME"),
 }
 
@@ -187,6 +194,25 @@ def _parse_education(lines: list[str]) -> list[EducationEntry]:
     return entries
 
 
+def _parse_projects(lines: list[str]) -> list[ProjectEntry]:
+    projects: list[ProjectEntry] = []
+    current: ProjectEntry | None = None
+    for line in lines:
+        text = BULLET_PREFIX.sub("", line).strip()
+        if not text:
+            continue
+        is_bullet = bool(BULLET_PREFIX.match(line))
+        if not is_bullet and len(text.split()) <= 10:
+            current = ProjectEntry(name=text)
+            projects.append(current)
+        elif current:
+            current.bullets.append(text)
+        else:
+            current = ProjectEntry(name="Project", description=text)
+            projects.append(current)
+    return projects[:8]
+
+
 def _guess_name(header_lines: list[str]) -> str:
     for line in header_lines[:6]:
         clean = line.strip()
@@ -223,10 +249,15 @@ def parse_resume_file(path: Path, profile_skills: list[str] | None = None) -> Pa
     url_list = [u[0] if isinstance(u, tuple) else u for u in urls]
     linkedin = next((u for u in url_list if "linkedin" in u.lower()), None)
     github = next((u for u in url_list if "github" in u.lower()), None)
+    portfolio = next(
+        (
+            u for u in url_list
+            if "linkedin" not in u.lower() and "github" not in u.lower()
+        ),
+        None,
+    )
 
     experience = _parse_experience(sections["experience"])
-    if not experience and sections["projects"]:
-        experience = _parse_experience(sections["projects"])
 
     skills = _parse_skills(sections["skills"], normalized_text, profile_skills)
 
@@ -237,13 +268,20 @@ def parse_resume_file(path: Path, profile_skills: list[str] | None = None) -> Pa
             phone=phone.group(0).strip() if phone else "",
             linkedin=linkedin,
             github=github,
+            portfolio=portfolio,
         ),
         summary=_build_summary(sections),
         skills_must_have=skills,
         skills_nice_to_have=[],
         experience=experience,
+        projects=_parse_projects(sections["projects"]),
         education=_parse_education(sections["education"]),
         certifications=[
             BULLET_PREFIX.sub("", l).strip() for l in sections["certifications"][:10] if len(l.strip()) > 3
+        ],
+        achievements=[
+            BULLET_PREFIX.sub("", l).strip()
+            for l in sections["achievements"][:10]
+            if len(l.strip()) > 3
         ],
     )

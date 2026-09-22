@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
@@ -12,6 +12,10 @@ def _uuid():
     return uuid.uuid4()
 
 
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 class UserProfile(Base):
     __tablename__ = "user_profiles"
 
@@ -20,6 +24,9 @@ class UserProfile(Base):
     skills_must_have: Mapped[list] = mapped_column(JSON, default=list)
     skills_nice_to_have: Mapped[list] = mapped_column(JSON, default=list)
     experience_years: Mapped[float] = mapped_column(Float, default=0)
+    seniority_levels: Mapped[list] = mapped_column(JSON, default=lambda: ["mid"])
+    work_modes: Mapped[list] = mapped_column(JSON, default=lambda: ["any"])
+    # Legacy singular columns are kept for backward-compatible migration.
     seniority_level: Mapped[str] = mapped_column(String(32), default="mid")
     locations: Mapped[list] = mapped_column(JSON, default=list)
     work_mode: Mapped[str] = mapped_column(String(32), default="any")
@@ -44,8 +51,8 @@ class UserProfile(Base):
     match_threshold: Mapped[float] = mapped_column(Float, default=50.0)
     contact: Mapped[dict] = mapped_column(JSON, default=dict)
     is_active: Mapped[bool] = mapped_column(default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
     parsed_resume: Mapped["ParsedResume | None"] = relationship(back_populates="profile", uselist=False)
     matches: Mapped[list["JobMatch"]] = relationship(back_populates="profile")
@@ -59,7 +66,7 @@ class ParsedResume(Base):
     profile_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("user_profiles.id"), unique=True)
     json_blob: Mapped[dict] = mapped_column(JSON, default=dict)
     source_file_path: Mapped[str] = mapped_column(String(512), default="")
-    parsed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    parsed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     profile: Mapped["UserProfile"] = relationship(back_populates="parsed_resume")
 
@@ -81,7 +88,7 @@ class JobPosting(Base):
     salary_max: Mapped[float | None] = mapped_column(Float, nullable=True)
     raw_json: Mapped[dict] = mapped_column(JSON, default=dict)
     jd_embedding: Mapped[list | None] = mapped_column(JSON, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     matches: Mapped[list["JobMatch"]] = relationship(back_populates="job")
 
@@ -96,7 +103,7 @@ class JobMatch(Base):
     score: Mapped[float] = mapped_column(Float, default=0)
     reasons: Mapped[list] = mapped_column(JSON, default=list)
     status: Mapped[str] = mapped_column(String(32), default="pending")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     profile: Mapped["UserProfile"] = relationship(back_populates="matches")
     job: Mapped["JobPosting"] = relationship(back_populates="matches")
@@ -111,7 +118,7 @@ class TailoredResume(Base):
     docx_path: Mapped[str] = mapped_column(String(512))
     pdf_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     diff_summary: Mapped[str] = mapped_column(Text, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     match: Mapped["JobMatch"] = relationship(back_populates="tailored_resume")
 
