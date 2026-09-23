@@ -28,7 +28,6 @@ def build_linkedin_search_urls(profile: UserProfile) -> list[str]:
                 f"keywords={quote_plus(role)}",
                 f"location={quote_plus(location)}",
                 "f_TPR=r86400",
-                "sortBy=DD",
             ]
             levels = getattr(profile, "seniority_levels", None) or [
                 getattr(profile, "seniority_level", "mid")

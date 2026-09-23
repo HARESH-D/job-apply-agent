@@ -14,30 +14,41 @@ from packages.shared.schemas import (
 )
 
 SECTION_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "experience": ("WORKEXPERIENCE", "PROFESSIONALEXPERIENCE", "EXPERIENCE", "EMPLOYMENT", "CAREERHISTORY"),
-    "skills": ("TECHNICALSKILLS", "CORESKILLS", "SKILLS", "TECHNOLOGIES", "TECHSTACK"),
+    "experience": ("WORKEXPERIENCE", "PROFESSIONALEXPERIENCE", "EXPERIENCE", "EMPLOYMENT", "CAREERHISTORY", "WORKHISTORY", "INTERNSHIPS"),
+    "skills": ("TECHNICALSKILLS", "CORESKILLS", "SKILLS", "TECHNOLOGIES", "TECHSTACK", "TECHNICALPROFICIENCIES"),
     "education": ("EDUCATION", "ACADEMIC", "QUALIFICATIONS"),
     "certifications": ("CERTIFICATIONS", "CERTIFICATION", "LICENSES"),
-    "projects": ("PROJECTS", "PERSONALPROJECTS"),
+    "projects": ("PROJECTS", "PERSONALPROJECTS", "OPENSOURCE"),
     "achievements": ("ACHIEVEMENTS", "AWARDS", "AWARDSANDACHIEVEMENTS"),
     "summary": ("SUMMARY", "PROFESSIONALSUMMARY", "OBJECTIVE", "PROFILE", "ABOUTME"),
 }
 
 BULLET_PREFIX = re.compile(r"^\s*[-•*▪◦‣·]\s*|^\s*\d+[.)]\s*")
+MONTH = r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+DATE_VALUE = rf"(?:{MONTH}\s+)?(?:19|20)\d{{2}}"
 DATE_RANGE = re.compile(
-    r"(19|20)\d{2}\s*[-–—to]+\s*((19|20)\d{2}|present|current)",
+    rf"(?P<start>{DATE_VALUE})\s*(?:-|–|—|to)\s*"
+    rf"(?P<end>{DATE_VALUE}|present|current)",
     re.IGNORECASE,
 )
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 PHONE_RE = re.compile(r"(\+?\d[\d\s().-]{8,}\d)")
-URL_RE = re.compile(r"(https?://\S+|(?:www\.|linkedin\.com/|github\.com/)\S+)", re.IGNORECASE)
+URL_RE = re.compile(
+    r"(https?://[^\s|,;]+|(?:www\.|linkedin\.com/|github\.com/)[^\s|,;]+|"
+    r"(?<![@\w])(?:[a-z0-9-]+\.)+(?:dev|io|me|com|net|org)(?:/[^\s|,;]*)?)",
+    re.IGNORECASE,
+)
 
 
 def _extract_text_pdf(path: Path) -> str:
     parts: list[str] = []
     with pdfplumber.open(path) as pdf:
         for page in pdf.pages:
-            text = page.extract_text()
+            text = page.extract_text(
+                layout=True,
+                x_tolerance=2,
+                y_tolerance=3,
+            )
             if text:
                 parts.append(text)
     return "\n".join(parts)
@@ -45,7 +56,17 @@ def _extract_text_pdf(path: Path) -> str:
 
 def _extract_text_docx(path: Path) -> str:
     doc = Document(path)
-    return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+    lines = [p.text for p in doc.paragraphs if p.text.strip()]
+    for table in doc.tables:
+        for row in table.rows:
+            values = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+            if values:
+                lines.append(" | ".join(values))
+    for relationship in doc.part.rels.values():
+        target = str(getattr(relationship, "target_ref", ""))
+        if target.startswith(("http://", "https://")):
+            lines.append(target)
+    return "\n".join(lines)
 
 
 def extract_text(path: Path) -> str:
@@ -129,53 +150,96 @@ def _parse_skills(lines: list[str], text: str, profile_skills: list[str] | None)
     return deduped[:40]
 
 
+def _split_role_company(value: str) -> tuple[str, str]:
+    cleaned = value.strip(" |,-–—")
+    role, separator, company = cleaned.partition(" at ")
+    if separator:
+        return role.strip(), company.strip()
+    parts = [
+        part.strip()
+        for part in re.split(r"\s*[|–—]\s*|\s+-\s+", cleaned)
+        if part.strip()
+    ]
+    return (
+        parts[0] if parts else "",
+        parts[1] if len(parts) > 1 else "",
+    )
+
+
+def _experience_header(
+    lines: list[str], index: int
+) -> tuple[ExperienceEntry, int] | None:
+    line = lines[index].strip()
+    if not line or BULLET_PREFIX.match(line):
+        return None
+    date_match = DATE_RANGE.search(line)
+    if date_match:
+        role, company = _split_role_company(DATE_RANGE.sub("", line))
+        return (
+            ExperienceEntry(
+                role=role,
+                company=company,
+                start_date=date_match.group("start").strip(),
+                end_date=date_match.group("end").strip().title(),
+                bullets=[],
+            ),
+            1,
+        )
+
+    if index + 2 < len(lines):
+        company = lines[index + 1].strip()
+        date_line = lines[index + 2].strip()
+        date_match = DATE_RANGE.search(date_line)
+        if (
+            date_match
+            and not BULLET_PREFIX.match(company)
+            and not BULLET_PREFIX.match(date_line)
+        ):
+            return (
+                ExperienceEntry(
+                    role=line,
+                    company=company,
+                    start_date=date_match.group("start").strip(),
+                    end_date=date_match.group("end").strip().title(),
+                    bullets=[],
+                ),
+                3,
+            )
+
+    if index + 1 < len(lines):
+        date_match = DATE_RANGE.search(lines[index + 1])
+        if date_match:
+            role, company = _split_role_company(line)
+            return (
+                ExperienceEntry(
+                    role=role,
+                    company=company,
+                    start_date=date_match.group("start").strip(),
+                    end_date=date_match.group("end").strip().title(),
+                    bullets=[],
+                ),
+                2,
+            )
+    return None
+
+
 def _parse_experience(lines: list[str]) -> list[ExperienceEntry]:
     entries: list[ExperienceEntry] = []
     current: ExperienceEntry | None = None
-
-    for line in lines:
-        if not line.strip():
-            continue
-        is_bullet = bool(BULLET_PREFIX.match(line))
-        text = BULLET_PREFIX.sub("", line).strip()
-        if not text:
-            continue
-
-        date_match = DATE_RANGE.search(text)
-        starts_entry = bool(date_match) or (
-            not is_bullet and len(text.split()) <= 10 and not text.endswith(".")
-        )
-
-        if starts_entry and (current is None or current.bullets or date_match):
-            role_line = DATE_RANGE.sub("", text).strip(" |,-–—")
-            role, _, company = role_line.partition(" at ")
-            if not company:
-                parts = re.split(r"\s[|–—-]\s", role_line, maxsplit=1)
-                role = parts[0].strip()
-                company = parts[1].strip() if len(parts) > 1 else ""
-            start_date = end_date = ""
-            if date_match:
-                span = date_match.group(0)
-                bits = re.split(r"[-–—]|to", span, maxsplit=1)
-                start_date = bits[0].strip()
-                end_date = bits[1].strip() if len(bits) > 1 else ""
-            current = ExperienceEntry(
-                company=company.strip(),
-                role=role.strip(),
-                start_date=start_date,
-                end_date=end_date or "present",
-                bullets=[],
-            )
+    index = 0
+    while index < len(lines):
+        header = _experience_header(lines, index)
+        if header:
+            current, consumed = header
             entries.append(current)
+            index += consumed
             continue
 
-        if current is None:
-            current = ExperienceEntry(company="", role="", bullets=[])
-            entries.append(current)
-        if len(text) > 15:
+        text = BULLET_PREFIX.sub("", lines[index]).strip()
+        if text and current is not None:
             current.bullets.append(text)
-
-    return [e for e in entries if e.bullets or e.role][:8]
+        index += 1
+    return [entry for entry in entries if entry.role or entry.company][:12]
 
 
 def _parse_education(lines: list[str]) -> list[EducationEntry]:
@@ -188,7 +252,23 @@ def _parse_education(lines: list[str]) -> list[EducationEntry]:
         year_match = re.search(r"(19|20)\d{2}", text)
         if year_match:
             year = year_match.group(0)
-        entries.append(EducationEntry(institution=text, degree="", year=year))
+        without_year = (
+            text.replace(year, "").strip(" |,-") if year else text
+        )
+        parts = [
+            part.strip()
+            for part in re.split(r"\s*\|\s*", without_year)
+            if part.strip()
+        ]
+        degree = parts[0] if len(parts) > 1 else ""
+        institution = parts[1] if len(parts) > 1 else without_year
+        entries.append(
+            EducationEntry(
+                institution=institution,
+                degree=degree,
+                year=year,
+            )
+        )
         if len(entries) >= 5:
             break
     return entries
@@ -202,8 +282,21 @@ def _parse_projects(lines: list[str]) -> list[ProjectEntry]:
         if not text:
             continue
         is_bullet = bool(BULLET_PREFIX.match(line))
-        if not is_bullet and len(text.split()) <= 10:
-            current = ProjectEntry(name=text)
+        if not is_bullet and len(text.split()) <= 14:
+            parts = [part.strip() for part in text.split("|") if part.strip()]
+            technologies = (
+                [
+                    tech.strip()
+                    for tech in re.split(r"[,;/]", parts[1])
+                    if tech.strip()
+                ]
+                if len(parts) > 1
+                else []
+            )
+            current = ProjectEntry(
+                name=parts[0],
+                technologies=technologies,
+            )
             projects.append(current)
         elif current:
             current.bullets.append(text)
@@ -236,17 +329,23 @@ def _build_summary(sections: dict[str, list[str]]) -> str:
     return re.sub(r"\s+", " ", text).strip()[:800]
 
 
-def parse_resume_file(path: Path, profile_skills: list[str] | None = None) -> ParsedResume:
-    raw = extract_text(path)
+def _clean_url(value: str) -> str:
+    return value.strip().rstrip(".,;:|)")
+
+
+def parse_resume_text(
+    raw: str, profile_skills: list[str] | None = None
+) -> ParsedResume:
     lines = [_normalize_line(l) for l in raw.splitlines()]
     lines = [l for l in lines if l.strip()]
     normalized_text = "\n".join(lines)
     sections = _split_sections(lines)
 
-    email = EMAIL_RE.search(normalized_text)
-    phone = PHONE_RE.search(normalized_text)
-    urls = URL_RE.findall(normalized_text)
-    url_list = [u[0] if isinstance(u, tuple) else u for u in urls]
+    header_text = "\n".join(sections["header"])
+    email = EMAIL_RE.search(header_text)
+    phone = PHONE_RE.search(header_text)
+    urls = URL_RE.findall(header_text)
+    url_list = [_clean_url(u[0] if isinstance(u, tuple) else u) for u in urls]
     linkedin = next((u for u in url_list if "linkedin" in u.lower()), None)
     github = next((u for u in url_list if "github" in u.lower()), None)
     portfolio = next(
@@ -261,7 +360,7 @@ def parse_resume_file(path: Path, profile_skills: list[str] | None = None) -> Pa
 
     skills = _parse_skills(sections["skills"], normalized_text, profile_skills)
 
-    return ParsedResume(
+    parsed = ParsedResume(
         name=_guess_name(sections["header"]),
         contact=ContactInfo(
             email=email.group(0) if email else "",
@@ -285,3 +384,18 @@ def parse_resume_file(path: Path, profile_skills: list[str] | None = None) -> Pa
             if len(l.strip()) > 3
         ],
     )
+    if not parsed.name:
+        parsed.extraction_warnings.append("Name was not detected")
+    if not parsed.experience:
+        parsed.extraction_warnings.append("No work experience section was detected")
+    if any(not entry.company for entry in parsed.experience):
+        parsed.extraction_warnings.append("Some experience entries have no company")
+    if parsed.education and any(not entry.degree for entry in parsed.education):
+        parsed.extraction_warnings.append("Some education entries have no degree")
+    return parsed
+
+
+def parse_resume_file(
+    path: Path, profile_skills: list[str] | None = None
+) -> ParsedResume:
+    return parse_resume_text(extract_text(path), profile_skills)

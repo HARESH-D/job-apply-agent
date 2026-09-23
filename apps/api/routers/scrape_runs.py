@@ -1,4 +1,5 @@
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 
@@ -17,13 +18,24 @@ from packages.shared.schemas import ScrapeRunCreate, ScrapeRunResponse
 router = APIRouter(prefix="/scrape-runs", tags=["scrape-runs"])
 
 
+def _as_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 @router.post("", response_model=ScrapeRunResponse, dependencies=[Depends(verify_worker_key)])
 def create_scrape_run(data: ScrapeRunCreate, db: Session = Depends(get_db)):
     run = ScrapeRun(**data.model_dump())
     db.add(run)
     db.commit()
     db.refresh(run)
-    return ScrapeRunResponse(id=run.id, **data.model_dump())
+    response = data.model_dump()
+    response["started_at"] = _as_utc(response["started_at"])
+    response["completed_at"] = _as_utc(response["completed_at"])
+    return ScrapeRunResponse(id=run.id, **response)
 
 
 @router.get("", response_model=list[ScrapeRunResponse])
@@ -39,8 +51,8 @@ def list_scrape_runs(profile_id: UUID = Query(...), db: Session = Depends(get_db
         ScrapeRunResponse(
             id=r.id,
             profile_id=r.profile_id,
-            started_at=r.started_at,
-            completed_at=r.completed_at,
+            started_at=_as_utc(r.started_at),
+            completed_at=_as_utc(r.completed_at),
             jobs_found=r.jobs_found,
             errors=r.errors,
             status=r.status,

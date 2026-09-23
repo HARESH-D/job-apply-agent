@@ -69,6 +69,7 @@ def init_db():
             conn.commit()
     Base.metadata.create_all(bind=engine)
     _ensure_profile_preference_columns()
+    _ensure_job_metadata_columns()
 
 
 def _ensure_profile_preference_columns() -> None:
@@ -116,3 +117,47 @@ def _ensure_profile_preference_columns() -> None:
                     ),
                     values,
                 )
+
+
+def _ensure_job_metadata_columns() -> None:
+    inspector = inspect(engine)
+    if "job_postings" not in inspector.get_table_names():
+        return
+    columns = {column["name"] for column in inspector.get_columns("job_postings")}
+    dialect = engine.dialect.name
+    boolean_true = "TRUE" if dialect == "postgresql" else "1"
+    boolean_false = "FALSE" if dialect == "postgresql" else "0"
+    definitions = {
+        "workplace_type": "VARCHAR(16) DEFAULT 'unknown'",
+        "is_accepting_applications": f"BOOLEAN DEFAULT {boolean_true}",
+        "is_promoted": f"BOOLEAN DEFAULT {boolean_false}",
+    }
+    missing = [name for name in definitions if name not in columns]
+    if not missing:
+        return
+    with engine.begin() as conn:
+        for name in missing:
+            conn.execute(
+                text(
+                    f"ALTER TABLE job_postings ADD COLUMN {name} "
+                    f"{definitions[name]}"
+                )
+            )
+        conn.execute(
+            text(
+                "UPDATE job_postings SET workplace_type = 'unknown' "
+                "WHERE workplace_type IS NULL"
+            )
+        )
+        conn.execute(
+            text(
+                f"UPDATE job_postings SET is_accepting_applications = {boolean_true} "
+                "WHERE is_accepting_applications IS NULL"
+            )
+        )
+        conn.execute(
+            text(
+                f"UPDATE job_postings SET is_promoted = {boolean_false} "
+                "WHERE is_promoted IS NULL"
+            )
+        )

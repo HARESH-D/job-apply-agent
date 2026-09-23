@@ -90,6 +90,7 @@ class ParsedResume(BaseModel):
     education: list[EducationEntry] = Field(default_factory=list)
     certifications: list[str] = Field(default_factory=list)
     achievements: list[str] = Field(default_factory=list)
+    extraction_warnings: list[str] = Field(default_factory=list)
 
 
 class ProfileCreate(BaseModel):
@@ -169,6 +170,9 @@ class JobPostingCreate(BaseModel):
     title: str
     company: str
     location: str = ""
+    workplace_type: str = "unknown"
+    is_accepting_applications: bool = True
+    is_promoted: bool = False
     jd_text: str = ""
     posted_at: Optional[datetime] = None
     url: str = ""
@@ -188,7 +192,12 @@ class JobResponse(BaseModel):
     external_id: str
     title: str
     company: str
+    company_tier: str = "unrated"
+    company_tier_label: str = "Unrated"
     location: str
+    workplace_type: str = "unknown"
+    is_accepting_applications: bool = True
+    is_promoted: bool = False
     jd_text: str
     posted_at: Optional[datetime]
     url: str

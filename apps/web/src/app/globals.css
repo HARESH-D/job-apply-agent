@@ -162,7 +162,7 @@ a:hover {
   padding: var(--space-5) var(--space-4) var(--space-5);
   max-width: 860px;
   width: 100%;
-  animation: fade-up 0.55s 0.05s var(--ease) both;
+  animation: fade-in 0.55s 0.05s var(--ease) both;
 }
 
 .page-title {
@@ -328,6 +328,19 @@ a:hover {
   margin-top: var(--space-3);
 }
 
+.action-status {
+  font-size: 0.875rem;
+  font-weight: 650;
+}
+
+.action-status-ok {
+  color: var(--ok);
+}
+
+.action-status-err {
+  color: var(--err);
+}
+
 /* ——— Toast / messages ——— */
 
 .toast {
@@ -377,11 +390,8 @@ a:hover {
 }
 
 .multi-select-menu {
-  position: absolute;
-  z-index: 30;
-  top: calc(100% + 0.35rem);
-  left: 0;
-  right: 0;
+  position: static;
+  margin-top: 0.35rem;
   padding: 0.4rem;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
@@ -437,6 +447,21 @@ a:hover {
   color: var(--ink-soft);
   font-size: 0.82rem;
   line-height: 1.45;
+}
+
+.resume-warning {
+  margin-top: var(--space-3);
+  padding: 0.8rem 1rem;
+  border: 1px solid rgba(192, 57, 43, 0.3);
+  border-radius: var(--radius-sm);
+  color: var(--err);
+  background: rgba(192, 57, 43, 0.04);
+  font-size: 0.85rem;
+}
+
+.resume-warning ul {
+  margin: 0.4rem 0 0;
+  padding-left: 1.1rem;
 }
 
 .toast-ok {
@@ -505,6 +530,33 @@ a:hover {
   margin: 0;
   font-size: 0.9rem;
   color: var(--ink-muted);
+}
+
+.job-badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.tier-badge {
+  padding: 0.28rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--ink-muted);
+  background: var(--surface-solid);
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.tier-badge[data-tier="tier1"],
+.tier-badge[data-tier="tier2"] {
+  border-color: rgba(49, 92, 109, 0.35);
+  color: var(--accent-deep);
+  background: rgba(49, 92, 109, 0.06);
 }
 
 .score-badge {
@@ -664,6 +716,15 @@ a:hover {
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
   }
 }
 

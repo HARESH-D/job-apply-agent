@@ -45,13 +45,20 @@ Open [http://localhost:3000](http://localhost:3000)
 
 Profile work modes and seniority levels support multiple selections. Matching
 hard-rejects jobs whose explicit years-of-experience requirement exceeds the
-saved profile and rejects titles outside the selected levels.
+saved profile, rejects titles outside the selected levels, and validates the
+scraped workplace type. Closed applications and postings older than 24 hours
+are excluded even when LinkedIn promotes them.
 
 Resume tailoring is local and deterministic by default. Gemini 2.5 Flash-Lite
 is optional per request: enabling it sends the resume and job description to
 Google under Google's data-use terms. Missing keys, quota errors, timeouts, and
 invalid output fall back to local tailoring. All output is validated against
 the verified base resume and rendered as a single-column ATS-safe DOCX.
+Resume upload uses a layout-aware local parser for PDF/DOCX content, with an
+optional consent-based Gemini repair pass for difficult layouts.
+
+Job cards show a curated company tier beside the match score. Unmapped
+companies remain `Unrated`; the application never guesses a tier.
 
 ### 3. Local scraper (your PC)
 

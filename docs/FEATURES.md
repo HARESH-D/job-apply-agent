@@ -99,6 +99,8 @@ Cloud **never** scrapes LinkedIn directly. LinkedIn session cookies stay **local
 - [x] Hybrid score with explainable reasons (top 5)
 - [x] Threshold gate: only jobs ≥50% proceed to tailoring (tunable in UI)
 - [x] Job dashboard sorted by score, freshness, company
+- [x] Curated five-tier company badges with an explicit Unrated fallback
+- [x] Reject closed, stale, and workplace-incompatible LinkedIn jobs
 
 ### 3.4 Resume tailoring
 
@@ -315,6 +317,9 @@ Applied before scoring; a failure returns score `0` with the reason stored.
 | Location | Profile location (plus aliases) must appear in job location, or the job is remote and `work_mode` allows it |
 | Experience | Reject when the JD's explicit minimum years exceed the profile |
 | Seniority | Reject Senior/Staff/Principal/Lead/Director/Executive titles outside selected levels |
+| Workplace | Require the scraped Remote/Hybrid/On-site type to match selected modes |
+| Application status | Reject “No longer accepting applications” postings |
+| Freshness | Reject postings older than 24 hours using the card timestamp |
 
 **City aliases matter.** LinkedIn returns `Bengaluru, Karnataka, India` while users
 type `Bangalore`, so a plain substring test rejected every valid local job.
@@ -365,6 +370,12 @@ Gemini 2.5 Flash-Lite is disabled by default and requires explicit consent for
 each request because resume and JD data are sent to Google. If the key is
 missing, quota or timeout occurs, JSON is invalid, or factual validation fails,
 the deterministic local result is used. Generated files are versioned per job.
+
+Resume extraction is also local by default. It reads PDF layout, DOCX tables
+and hyperlinks, multiline employment entries, structured education, projects,
+certifications, and achievements. Users may separately opt in to Gemini repair
+for difficult layouts; unverified extracted facts are rejected and the local
+result remains the fallback.
 
 ### ATS template rules
 

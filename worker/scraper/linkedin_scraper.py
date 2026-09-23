@@ -1,10 +1,22 @@
 """LinkedIn job scraper via Playwright (authenticated jobs UI)."""
 import asyncio
+import math
 import random
-from datetime import datetime, timezone
+import sys
+from pathlib import Path
 from typing import Any
 
 from playwright.async_api import ElementHandle, Page, async_playwright
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from packages.shared.job_metadata import (
+    detect_workplace_type,
+    is_closed_application_text,
+    parse_linkedin_posted_at,
+)
 
 BASE_URL = "https://www.linkedin.com"
 
@@ -18,6 +30,14 @@ SELECTORS = {
     "jd_pane": "#job-details, .jobs-description__content, .jobs-box__html-content",
     "results_container": ".scaffold-layout__list > div, .jobs-search-results-list",
     "authenticated_nav": "img.global-nav__me-photo, .global-nav__me",
+    "detail_header": (
+        ".job-details-jobs-unified-top-card__container--two-pane, "
+        ".jobs-unified-top-card, .jobs-details-top-card"
+    ),
+    "job_insights": (
+        ".job-details-jobs-unified-top-card__job-insight, "
+        ".jobs-unified-top-card__job-insight"
+    ),
 }
 
 # LinkedIn loads Google reCAPTCHA on normal pages, so the word "captcha" in the
@@ -78,12 +98,17 @@ async def _collect_cards(page: Page, max_jobs: int) -> list[dict[str, Any]]:
             title = await _text_of(item, SELECTORS["job_title"])
             if not title:
                 continue
+            card_text = (await item.inner_text()).strip()
+            posted_at = parse_linkedin_posted_at(card_text)
             collected[job_id] = {
                 "external_id": job_id,
                 "title": title,
                 "company": await _text_of(item, SELECTORS["job_company"]),
                 "location": await _text_of(item, SELECTORS["job_location"]),
                 "url": f"{BASE_URL}/jobs/view/{job_id}/",
+                "workplace_type": detect_workplace_type(card_text),
+                "is_promoted": "promoted" in card_text.lower(),
+                "posted_at": posted_at.isoformat() if posted_at else None,
             }
 
         if len(collected) >= max_jobs:
@@ -120,6 +145,20 @@ async def _extract_jd_from_pane(page: Page, job_id: str) -> str:
     return await _read_jd_pane(page)
 
 
+async def _read_detail_metadata(page: Page) -> tuple[str, bool]:
+    header = await page.query_selector(SELECTORS["detail_header"])
+    header_text = (await header.inner_text()).strip() if header else ""
+    insights = await page.query_selector_all(SELECTORS["job_insights"])
+    insight_text = " ".join(
+        (await insight.inner_text()).strip() for insight in insights
+    )
+    combined = f"{header_text} {insight_text}"
+    return (
+        detect_workplace_type(combined),
+        not is_closed_application_text(combined),
+    )
+
+
 async def scrape_linkedin_jobs(
     search_urls: list[str],
     storage_state_path: str,
@@ -137,7 +176,7 @@ async def scrape_linkedin_jobs(
         page = await context.new_page()
 
         try:
-            for search_url in search_urls:
+            for index, search_url in enumerate(search_urls):
                 if len(jobs) >= max_jobs:
                     break
 
@@ -155,7 +194,12 @@ async def scrape_linkedin_jobs(
                         print(f"  no job cards rendered for: {search_url}")
                     continue
 
-                cards = await _collect_cards(page, max_jobs=max_jobs - len(jobs))
+                remaining_urls = len(search_urls) - index
+                quota = max(
+                    1,
+                    math.ceil((max_jobs - len(jobs)) / remaining_urls),
+                )
+                cards = await _collect_cards(page, max_jobs=quota)
                 if verbose:
                     query = search_url.split("keywords=")[-1].split("&")[0].replace("+", " ")
                     print(f"  {len(cards)} cards for '{query}'")
@@ -168,15 +212,24 @@ async def scrape_linkedin_jobs(
                     seen_ids.add(card["external_id"])
 
                     jd_text = await _extract_jd_from_pane(page, card["external_id"])
+                    detail_workplace, accepting = await _read_detail_metadata(page)
+                    workplace = (
+                        detail_workplace
+                        if detail_workplace != "unknown"
+                        else card["workplace_type"]
+                    )
                     jobs.append({
                         "source": "linkedin",
                         "external_id": card["external_id"],
                         "title": card["title"],
                         "company": card["company"],
                         "location": card["location"],
+                        "workplace_type": workplace,
+                        "is_accepting_applications": accepting,
+                        "is_promoted": card["is_promoted"],
                         "url": card["url"],
                         "jd_text": jd_text,
-                        "posted_at": datetime.now(timezone.utc).isoformat(),
+                        "posted_at": card["posted_at"],
                         "raw_json": card,
                     })
                     if verbose:

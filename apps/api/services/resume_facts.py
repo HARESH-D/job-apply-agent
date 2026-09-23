@@ -25,7 +25,7 @@ def merge_resume_facts(profile, parsed: ParsedResume) -> ParsedResume:
     contact = profile.contact or {}
     base_contact = merged.contact.model_dump()
     for field in ("email", "phone", "linkedin", "github", "portfolio"):
-        if not base_contact.get(field) and contact.get(field):
+        if contact.get(field):
             base_contact[field] = contact[field]
     merged.contact = ContactInfo.model_validate(base_contact)
 
@@ -46,7 +46,7 @@ def merge_resume_facts(profile, parsed: ParsedResume) -> ParsedResume:
         merged.skills_nice_to_have + (profile.skills_nice_to_have or [])
     )
 
-    if not merged.education and profile.education:
+    if profile.education:
         merged.education = [
             EducationEntry.model_validate(item) for item in profile.education
         ]

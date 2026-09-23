@@ -39,7 +39,12 @@ export interface Job {
   id: string;
   title: string;
   company: string;
+  company_tier: string;
+  company_tier_label: string;
   location: string;
+  workplace_type: string;
+  is_accepting_applications: boolean;
+  is_promoted: boolean;
   jd_text: string;
   url: string;
   match_score?: number;
@@ -68,9 +73,11 @@ export const api = {
   getProfile: (id: string) => request<Profile>(`/profiles/${id}`),
   getCurrentProfile: () => request<Profile>("/profiles/current"),
 
-  uploadResume: async (id: string, file: File) => {
+  uploadResume: async (id: string, file: File, useGemini = false) => {
     const form = new FormData();
     form.append("file", file);
+    form.append("use_gemini", String(useGemini));
+    form.append("consent_to_google_processing", String(useGemini));
     const res = await fetch(`${API_BASE}/profiles/${id}/resume`, { method: "POST", body: form });
     if (!res.ok) throw new Error(await res.text());
     return res.json();

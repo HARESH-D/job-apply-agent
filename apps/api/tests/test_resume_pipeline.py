@@ -61,7 +61,7 @@ def test_profile_facts_fill_resume_gaps_without_overwriting_resume_truth():
 
     merged = merge_resume_facts(profile, _base_resume())
 
-    assert merged.contact.email == "ada@example.com"
+    assert merged.contact.email == "profile@example.com"
     assert merged.contact.phone == "+1 555 0100"
     assert merged.contact.portfolio == "ada.dev"
     assert merged.location == "Bangalore"

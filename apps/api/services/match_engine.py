@@ -209,6 +209,17 @@ def _passes_hard_filters(profile: UserProfile, job: JobPosting) -> tuple[bool, l
     jd_lower = job.jd_text.lower()
     title_lower = job.title.lower()
 
+    if getattr(job, "is_accepting_applications", True) is False:
+        return False, ["No longer accepting applications"]
+
+    if job.posted_at:
+        posted_at = job.posted_at
+        if posted_at.tzinfo is None:
+            posted_at = posted_at.replace(tzinfo=timezone.utc)
+        age = datetime.now(timezone.utc) - posted_at
+        if age.total_seconds() > 24 * 3600:
+            return False, ["Posted more than 24 hours ago"]
+
     for kw in profile.exclude_keywords:
         if kw.strip() and _matches_exclude_keyword(kw, jd_lower, title_lower):
             return False, [f"Excluded keyword: {kw}"]
@@ -228,6 +239,17 @@ def _passes_hard_filters(profile: UserProfile, job: JobPosting) -> tuple[bool, l
             f"Seniority mismatch: {job.title} is outside selected levels"
         ]
 
+    modes = getattr(profile, "work_modes", None) or [
+        getattr(profile, "work_mode", "any")
+    ]
+    normalized_modes = {getattr(mode, "value", mode) for mode in modes}
+    workplace = getattr(job, "workplace_type", "unknown") or "unknown"
+    if "any" not in normalized_modes:
+        if workplace == "unknown":
+            return False, ["Work mode unavailable"]
+        if workplace not in normalized_modes:
+            return False, [f"Work mode mismatch: {workplace}"]
+
     if profile.locations and job.location:
         job_loc = job.location.lower()
         loc_hit = any(
@@ -235,10 +257,6 @@ def _passes_hard_filters(profile: UserProfile, job: JobPosting) -> tuple[bool, l
             for loc in profile.locations
             for variant in _location_variants(loc)
         )
-        modes = getattr(profile, "work_modes", None) or [
-            getattr(profile, "work_mode", "any")
-        ]
-        normalized_modes = {getattr(mode, "value", mode) for mode in modes}
         remote_ok = bool(normalized_modes & {"remote", "any"}) and "remote" in job_loc
         if not loc_hit and not remote_ok:
             return False, [f"Location mismatch: {job.location}"]

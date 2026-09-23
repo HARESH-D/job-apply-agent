@@ -12,6 +12,7 @@ const SENIORITY_OPTIONS = [
   { value: "lead", label: "Lead" },
 ];
 const WORK_MODE_OPTIONS = [
+  { value: "any", label: "Any work mode" },
   { value: "remote", label: "Remote" },
   { value: "hybrid", label: "Hybrid" },
   { value: "onsite", label: "On-site" },
@@ -41,10 +42,26 @@ type ParsedResumeView = {
   experience?: Array<{
     company?: string;
     role?: string;
+    start_date?: string;
+    end_date?: string;
+    bullets?: string[];
+  }>;
+  projects?: Array<{
+    name?: string;
+    technologies?: string[];
     bullets?: string[];
   }>;
   education?: Array<{ institution?: string; degree?: string; year?: string }>;
-  contact?: { email?: string; phone?: string };
+  certifications?: string[];
+  achievements?: string[];
+  extraction_warnings?: string[];
+  contact?: {
+    email?: string;
+    phone?: string;
+    linkedin?: string;
+    github?: string;
+    portfolio?: string;
+  };
 };
 
 function ResumePreview({ data }: { data: Record<string, unknown> }) {
@@ -60,8 +77,15 @@ function ResumePreview({ data }: { data: Record<string, unknown> }) {
         <div className="resume-block">
           <h4>{r.name || "Candidate"}</h4>
           <p>
-            {[r.contact?.email, r.contact?.phone].filter(Boolean).join(" · ") ||
-              "—"}
+            {[
+              r.contact?.email,
+              r.contact?.phone,
+              r.contact?.linkedin,
+              r.contact?.github,
+              r.contact?.portfolio,
+            ]
+              .filter(Boolean)
+              .join(" · ") || "—"}
           </p>
         </div>
       )}
@@ -89,7 +113,25 @@ function ResumePreview({ data }: { data: Record<string, unknown> }) {
               <li key={`${exp.role}-${i}`}>
                 <strong>{exp.role || "Role"}</strong>
                 {exp.company ? ` · ${exp.company}` : ""}
+                {exp.start_date || exp.end_date
+                  ? ` · ${[exp.start_date, exp.end_date].filter(Boolean).join(" – ")}`
+                  : ""}
                 {exp.bullets?.[0] ? ` — ${exp.bullets[0].slice(0, 120)}` : ""}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {r.projects && r.projects.length > 0 && (
+        <div className="resume-block">
+          <h4>Projects</h4>
+          <ul>
+            {r.projects.map((project, index) => (
+              <li key={`${project.name}-${index}`}>
+                <strong>{project.name || "Project"}</strong>
+                {project.technologies?.length
+                  ? ` · ${project.technologies.join(", ")}`
+                  : ""}
               </li>
             ))}
           </ul>
@@ -109,6 +151,28 @@ function ResumePreview({ data }: { data: Record<string, unknown> }) {
           </ul>
         </div>
       )}
+      {r.certifications && r.certifications.length > 0 && (
+        <div className="resume-block">
+          <h4>Certifications</h4>
+          <p>{r.certifications.join(" · ")}</p>
+        </div>
+      )}
+      {r.achievements && r.achievements.length > 0 && (
+        <div className="resume-block">
+          <h4>Achievements</h4>
+          <ul>{r.achievements.map((item) => <li key={item}>{item}</li>)}</ul>
+        </div>
+      )}
+      {r.extraction_warnings && r.extraction_warnings.length > 0 && (
+        <div className="resume-warning" role="alert">
+          <strong>Review extraction</strong>
+          <ul>
+            {r.extraction_warnings.map((warning) => (
+              <li key={warning}>{warning}</li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   );
 }
@@ -117,10 +181,12 @@ export default function ProfilePage() {
   const [profileId, setProfileId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const [messageTone, setMessageTone] = useState<"ok" | "err" | "">("");
+  const [messageContext, setMessageContext] = useState<"load" | "save" | "upload">("load");
   const [parsed, setParsed] = useState<Record<string, unknown> | null>(null);
   const [loadingProfile, setLoadingProfile] = useState(true);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [useGeminiExtraction, setUseGeminiExtraction] = useState(false);
   const [form, setForm] = useState({
     target_roles: "Software Engineer, Backend Developer",
     skills_must_have: "Python, FastAPI, PostgreSQL, React",
@@ -198,6 +264,7 @@ export default function ProfilePage() {
         hydrate(profile);
       } catch {
         localStorage.removeItem(PROFILE_KEY);
+        setMessageContext("load");
         setMessage(
           cachedId
             ? "Your cached profile could not be recovered. Review the fields before saving."
@@ -256,6 +323,7 @@ export default function ProfilePage() {
 
   const save = async () => {
     setSaving(true);
+    setMessageContext("save");
     try {
       const payload = buildPayload();
       const p = profileId
@@ -277,8 +345,13 @@ export default function ProfilePage() {
     const file = e.target.files?.[0];
     if (!file || !profileId) return;
     setUploading(true);
+    setMessageContext("upload");
     try {
-      const result = await api.uploadResume(profileId, file);
+      const result = await api.uploadResume(
+        profileId,
+        file,
+        useGeminiExtraction,
+      );
       setParsed(result);
       setMessage("Resume parsed.");
       setMessageTone("ok");
@@ -306,7 +379,7 @@ export default function ProfilePage() {
         tailoring.
       </p>
 
-      {message && (
+      {message && messageContext !== "save" && (
         <p
           role={messageTone === "err" ? "alert" : "status"}
           aria-live="polite"
@@ -515,6 +588,15 @@ export default function ProfilePage() {
           >
             {saving ? "Saving…" : "Save profile"}
           </button>
+          {message && messageContext === "save" && (
+            <span
+              className={`action-status ${messageTone === "ok" ? "action-status-ok" : "action-status-err"}`}
+              role={messageTone === "err" ? "alert" : "status"}
+              aria-live="polite"
+            >
+              {message}
+            </span>
+          )}
         </div>
       </section>
 
@@ -522,6 +604,22 @@ export default function ProfilePage() {
         <div className="section-head">
           <h2>Resume</h2>
           <p>Upload a PDF or DOCX. Parsing feeds skills and experience into matching.</p>
+        </div>
+        <div className="privacy-consent">
+          <label>
+            <input
+              type="checkbox"
+              checked={useGeminiExtraction}
+              onChange={(event) =>
+                setUseGeminiExtraction(event.target.checked)
+              }
+            />
+            <span>Use Gemini to repair difficult resume extraction</span>
+          </label>
+          <p>
+            Optional. When enabled, the resume text is sent to Google under
+            Google&apos;s data-use terms. Local extraction remains the fallback.
+          </p>
         </div>
         <input
           className="file-input"

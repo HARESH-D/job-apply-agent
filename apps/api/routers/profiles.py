@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -22,7 +22,8 @@ from packages.shared.schemas import (
     ProfileUpdate,
 )
 from services.rescoring import rescore_profile
-from services.resume_parser import parse_resume_file
+from services.resume_parser import extract_text, parse_resume_file
+from services.gemini_resume_parser import repair_resume_with_gemini
 from services.search_builder import build_linkedin_search_urls
 
 router = APIRouter(prefix="/profiles", tags=["profiles"])
@@ -152,7 +153,13 @@ def replace_profile(profile_id: UUID, data: ProfileCreate, db: Session = Depends
 
 
 @router.post("/{profile_id}/resume", response_model=ParsedResumeSchema)
-async def upload_resume(profile_id: UUID, file: UploadFile = File(...), db: Session = Depends(get_db)):
+async def upload_resume(
+    profile_id: UUID,
+    file: UploadFile = File(...),
+    use_gemini: bool = Form(False),
+    consent_to_google_processing: bool = Form(False),
+    db: Session = Depends(get_db),
+):
     profile = db.query(UserProfile).filter(UserProfile.id == profile_id).first()
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
@@ -173,6 +180,28 @@ async def upload_resume(profile_id: UUID, file: UploadFile = File(...), db: Sess
     dest.write_bytes(content)
 
     parsed = parse_resume_file(dest, profile_skills=profile.skills_must_have)
+    if use_gemini and not consent_to_google_processing:
+        raise HTTPException(
+            status_code=400,
+            detail="Explicit consent is required before sending resume data to Google",
+        )
+    if use_gemini:
+        if not settings.gemini_api_key:
+            parsed.extraction_warnings.append(
+                "Gemini extraction was requested but no API key is configured; local extraction was used"
+            )
+        else:
+            try:
+                parsed = repair_resume_with_gemini(
+                    parsed,
+                    extract_text(dest),
+                    settings.gemini_api_key,
+                    settings.gemini_model,
+                )
+            except Exception:
+                parsed.extraction_warnings.append(
+                    "Gemini extraction failed validation or was unavailable; local extraction was used"
+                )
     if profile.skills_must_have and not parsed.skills_must_have:
         parsed.skills_must_have = profile.skills_must_have
 

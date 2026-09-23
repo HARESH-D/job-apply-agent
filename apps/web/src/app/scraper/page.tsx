@@ -95,7 +95,15 @@ python daemon.py         # start 6h scheduler`}</pre>
                   </span>
                   {" · "}
                   {run.jobs_found} jobs ·{" "}
-                  {new Date(run.started_at).toLocaleString()}
+                  {new Date(run.started_at).toLocaleString(undefined, {
+                    year: "numeric",
+                    month: "short",
+                    day: "numeric",
+                    hour: "numeric",
+                    minute: "2-digit",
+                    second: "2-digit",
+                    timeZoneName: "short",
+                  })}
                 </p>
                 {run.errors && (
                   <p className="status-err hint" style={{ marginTop: "0.4rem" }}>

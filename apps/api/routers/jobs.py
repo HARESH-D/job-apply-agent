@@ -1,4 +1,5 @@
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import UUID
 
@@ -14,18 +15,25 @@ from deps import verify_worker_key
 from models import JobMatch, JobPosting, ParsedResume, UserProfile
 from packages.shared.schemas import JobBulkCreate, JobResponse
 from services.match_engine import score_job
+from services.company_tier import classify_company
 
 router = APIRouter(tags=["jobs"])
 
 
 def _job_response(job: JobPosting, match: JobMatch | None = None) -> JobResponse:
+    company_tier = classify_company(job.company)
     return JobResponse(
         id=job.id,
         source=job.source,
         external_id=job.external_id,
         title=job.title,
         company=job.company,
+        company_tier=company_tier.tier,
+        company_tier_label=company_tier.label,
         location=job.location,
+        workplace_type=job.workplace_type,
+        is_accepting_applications=job.is_accepting_applications,
+        is_promoted=job.is_promoted,
         jd_text=job.jd_text,
         posted_at=job.posted_at,
         url=job.url,
@@ -58,14 +66,29 @@ def ingest_jobs_bulk(payload: JobBulkCreate, db: Session = Depends(get_db)):
             .filter(JobPosting.source == job_data.source, JobPosting.external_id == job_data.external_id)
             .first()
         )
-        jd_changed = False
+        data_changed = False
         if existing:
             job = existing
+            for field in (
+                "title",
+                "company",
+                "location",
+                "workplace_type",
+                "is_accepting_applications",
+                "is_promoted",
+                "posted_at",
+                "url",
+                "raw_json",
+            ):
+                value = getattr(job_data, field)
+                if value is not None and getattr(job, field) != value:
+                    setattr(job, field, value)
+                    data_changed = True
             # An earlier run may have stored an empty or truncated description.
             if len(job_data.jd_text) > len(job.jd_text or ""):
                 job.jd_text = job_data.jd_text
-                job.raw_json = job_data.raw_json
-                jd_changed = True
+                data_changed = True
+            if data_changed:
                 updated += 1
         else:
             job = JobPosting(**job_data.model_dump())
@@ -74,7 +97,7 @@ def ingest_jobs_bulk(payload: JobBulkCreate, db: Session = Depends(get_db)):
             created += 1
 
         match = db.query(JobMatch).filter(JobMatch.profile_id == profile.id, JobMatch.job_id == job.id).first()
-        if match and not jd_changed:
+        if match and not data_changed:
             continue
 
         score, reasons = score_job(profile, job, parsed)
@@ -110,9 +133,27 @@ def list_jobs(
         db.query(JobPosting, JobMatch)
         .join(JobMatch, JobMatch.job_id == JobPosting.id)
         .filter(JobMatch.profile_id == profile_id, JobMatch.score >= min_score)
+        .filter(JobPosting.is_accepting_applications.is_(True))
+        .filter(
+            (JobPosting.posted_at.is_(None))
+            | (
+                JobPosting.posted_at
+                >= datetime.now(timezone.utc).replace(tzinfo=None)
+                - timedelta(hours=24)
+            )
+        )
         .order_by(JobMatch.score.desc())
         .all()
     )
+    profile = db.query(UserProfile).filter(UserProfile.id == profile_id).first()
+    if profile:
+        modes = set(profile.work_modes or [profile.work_mode or "any"])
+        if "any" not in modes:
+            rows = [
+                (job, match)
+                for job, match in rows
+                if job.workplace_type in modes
+            ]
     return [_job_response(job, match) for job, match in rows]
 
 

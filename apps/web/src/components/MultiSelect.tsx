@@ -31,10 +31,14 @@ export function MultiSelect({ label, options, values, onChange }: Props) {
     .map((option) => option.label);
 
   const toggle = (value: string) => {
+    if (value === "any") {
+      onChange(values.includes("any") ? [] : ["any"]);
+      return;
+    }
     if (values.includes(value)) {
       onChange(values.filter((current) => current !== value));
     } else {
-      onChange([...values, value]);
+      onChange([...values.filter((current) => current !== "any"), value]);
     }
   };
 

@@ -8,8 +8,14 @@ from sqlalchemy.orm import Session
 
 from config import ROOT, resolve_database_url, resolve_storage_path
 from models import Base, JobPosting, UserProfile
+from packages.shared.job_metadata import (
+    detect_workplace_type,
+    is_closed_application_text,
+    parse_linkedin_posted_at,
+)
 from packages.shared.schemas import ProfileCreate, ProfileUpdate
 from routers.profiles import _apply_profile_data, get_current_profile
+from routers.scrape_runs import _as_utc
 from services.match_engine import _extract_required_years, score_job
 from services.search_builder import build_linkedin_search_urls
 
@@ -160,3 +166,103 @@ def test_legacy_profile_strings_migrate_to_json_lists(tmp_path, monkeypatch):
     assert {"seniority_levels", "work_modes"} <= columns
     assert json.loads(row["seniority_levels"]) == ["entry"]
     assert json.loads(row["work_modes"]) == ["hybrid"]
+
+
+def test_existing_jobs_receive_integrity_columns(tmp_path, monkeypatch):
+    engine = create_engine(f"sqlite:///{tmp_path / 'legacy-jobs.db'}")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE job_postings ("
+                "id VARCHAR PRIMARY KEY, title VARCHAR)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO job_postings (id, title) "
+                "VALUES ('job-1', 'Engineer')"
+            )
+        )
+    monkeypatch.setattr(database, "engine", engine)
+
+    database._ensure_job_metadata_columns()
+
+    columns = {column["name"] for column in inspect(engine).get_columns("job_postings")}
+    assert {
+        "workplace_type",
+        "is_accepting_applications",
+        "is_promoted",
+    } <= columns
+
+
+def test_naive_database_timestamp_is_serialized_as_utc():
+    stored = datetime(2026, 9, 22, 12, 3, 30)
+
+    normalized = _as_utc(stored)
+
+    assert normalized.tzinfo == timezone.utc
+    assert normalized.isoformat().endswith("+00:00")
+
+
+def test_linkedin_metadata_is_normalized():
+    now = datetime(2026, 9, 22, 12, 0, tzinfo=timezone.utc)
+
+    assert detect_workplace_type("Bengaluru (On-site)") == "onsite"
+    assert detect_workplace_type("India · Remote") == "remote"
+    assert is_closed_application_text("No longer accepting applications")
+    assert parse_linkedin_posted_at("5 hours ago", now) == now - timedelta(hours=5)
+
+
+def test_disallowed_workplace_is_hard_rejected():
+    profile = UserProfile(
+        target_roles=["Software Engineer"],
+        experience_years=2,
+        seniority_levels=["entry", "mid"],
+        work_modes=["remote", "hybrid"],
+        locations=["Bangalore"],
+        exclude_keywords=[],
+    )
+    job = JobPosting(
+        source="linkedin",
+        external_id="onsite-1",
+        title="Software Engineer",
+        company="Example",
+        location="Bengaluru",
+        workplace_type="onsite",
+        jd_text="Software Engineer with Python.",
+    )
+
+    score, reasons = score_job(profile, job, None)
+
+    assert score == 0
+    assert reasons == ["Work mode mismatch: onsite"]
+
+
+def test_closed_and_stale_jobs_are_hard_rejected():
+    profile = UserProfile(
+        target_roles=["Software Engineer"],
+        experience_years=2,
+        seniority_levels=["entry", "mid"],
+        work_modes=["any"],
+        locations=[],
+        exclude_keywords=[],
+    )
+    closed = JobPosting(
+        source="linkedin",
+        external_id="closed-1",
+        title="Software Engineer",
+        company="Example",
+        is_accepting_applications=False,
+        jd_text="Python role.",
+    )
+    stale = JobPosting(
+        source="linkedin",
+        external_id="stale-1",
+        title="Software Engineer",
+        company="Example",
+        posted_at=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=30),
+        jd_text="Python role.",
+    )
+
+    assert score_job(profile, closed, None) == (0.0, ["No longer accepting applications"])
+    assert score_job(profile, stale, None)[1] == ["Posted more than 24 hours ago"]

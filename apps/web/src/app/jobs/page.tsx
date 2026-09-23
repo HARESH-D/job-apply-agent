@@ -130,11 +130,20 @@ export default function JobsPage() {
                   {job.company} · {job.location}
                 </p>
               </div>
-              {job.match_score != null && (
-                <span className="score-badge">
-                  {job.match_score.toFixed(0)}%
+              <div className="job-badges">
+                <span
+                  className="tier-badge"
+                  data-tier={job.company_tier}
+                  title={`Curated classification: ${job.company_tier_label}`}
+                >
+                  {job.company_tier_label}
                 </span>
-              )}
+                {job.match_score != null && (
+                  <span className="score-badge">
+                    {job.match_score.toFixed(0)}%
+                  </span>
+                )}
+              </div>
             </div>
             {job.match_reasons && job.match_reasons.length > 0 && (
               <ul className="reasons">
