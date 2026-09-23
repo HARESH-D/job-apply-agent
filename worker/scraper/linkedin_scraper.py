@@ -149,10 +149,13 @@ async def _read_detail_metadata(page: Page) -> tuple[str, bool]:
     header = await page.query_selector(SELECTORS["detail_header"])
     header_text = (await header.inner_text()).strip() if header else ""
     insights = await page.query_selector_all(SELECTORS["job_insights"])
-    insight_text = " ".join(
-        (await insight.inner_text()).strip() for insight in insights
-    )
-    combined = f"{header_text} {insight_text}"
+    insight_parts: list[str] = []
+    for insight in insights:
+        try:
+            insight_parts.append((await insight.inner_text()).strip())
+        except Exception:
+            continue
+    combined = f"{header_text} {' '.join(insight_parts)}"
     return (
         detect_workplace_type(combined),
         not is_closed_application_text(combined),
